@@ -1,0 +1,10 @@
+[functions.process-voice-query]
+enabled = true
+verify_jwt = false
+import_map = "./functions/process-voice-query/deno.json"
+entrypoint = "./functions/process-voice-query/index.ts"
+
+[functions.get-stock-chart]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/get-stock-chart/index.ts"
