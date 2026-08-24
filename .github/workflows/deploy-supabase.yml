@@ -28,10 +28,12 @@ jobs:
             echo "Environment: PRODUCTION"
             TARGET_PROJECT="${{ secrets.SUPABASE_PROD_PROJECT_ID }}"
             TARGET_DB_PASS="${{ secrets.SUPABASE_PROD_DB_PASSWORD }}"
+            TARGET_DB_URL="postgresql://postgres.${TARGET_PROJECT}:${TARGET_DB_PASS}@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres"
           else
             echo "Environment: UAT / STAGING"
             TARGET_PROJECT="${{ secrets.SUPABASE_UAT_PROJECT_ID }}"
             TARGET_DB_PASS="${{ secrets.SUPABASE_UAT_DB_PASSWORD }}"
+            TARGET_DB_URL="postgresql://postgres.${TARGET_PROJECT}:${TARGET_DB_PASS}@aws-0-ap-south-1.pooler.supabase.com:6543/postgres"
           fi
 
           if [ -z "$TARGET_PROJECT" ] || [ -z "$TARGET_DB_PASS" ]; then
@@ -41,11 +43,11 @@ jobs:
           fi
 
           echo "PROJECT_ID=$TARGET_PROJECT" >> $GITHUB_ENV
-          echo "DB_PASSWORD=$TARGET_DB_PASS" >> $GITHUB_ENV
+          echo "DB_URL=$TARGET_DB_URL" >> $GITHUB_ENV
 
       - name: Push Database Migrations
         run: |
-          supabase db push --include-all --db-url "postgresql://postgres:${{ env.DB_PASSWORD }}@db.${{ env.PROJECT_ID }}.supabase.co:5432/postgres"
+          supabase db push --include-all --db-url "${{ env.DB_URL }}"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
