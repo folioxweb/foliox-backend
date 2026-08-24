@@ -26,25 +26,31 @@ jobs:
         run: |
           if [ "${{ github.ref_name }}" = "main" ]; then
             echo "Environment: PRODUCTION"
-            echo "PROJECT_ID=${{ secrets.SUPABASE_PROD_PROJECT_ID }}" >> $GITHUB_ENV
-            echo "DB_PASSWORD=${{ secrets.SUPABASE_PROD_DB_PASSWORD }}" >> $GITHUB_ENV
+            TARGET_PROJECT="${{ secrets.SUPABASE_PROD_PROJECT_ID }}"
+            TARGET_DB_PASS="${{ secrets.SUPABASE_PROD_DB_PASSWORD }}"
           else
             echo "Environment: UAT / STAGING"
-            echo "PROJECT_ID=${{ secrets.SUPABASE_UAT_PROJECT_ID }}" >> $GITHUB_ENV
-            echo "DB_PASSWORD=${{ secrets.SUPABASE_UAT_DB_PASSWORD }}" >> $GITHUB_ENV
+            TARGET_PROJECT="${{ secrets.SUPABASE_UAT_PROJECT_ID }}"
+            TARGET_DB_PASS="${{ secrets.SUPABASE_UAT_DB_PASSWORD }}"
           fi
 
-      - name: Link Supabase Project
-        run: supabase link --project-ref ${{ env.PROJECT_ID }} --password ${{ env.DB_PASSWORD }}
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          if [ -z "$TARGET_PROJECT" ] || [ -z "$TARGET_DB_PASS" ]; then
+            echo "❌ Error: Required Supabase Project ID or DB Password secret is missing in GitHub Repository Secrets."
+            echo "Please configure SUPABASE_PROD_PROJECT_ID, SUPABASE_PROD_DB_PASSWORD, SUPABASE_UAT_PROJECT_ID, SUPABASE_UAT_DB_PASSWORD, and SUPABASE_ACCESS_TOKEN in GitHub Settings -> Secrets -> Actions."
+            exit 1
+          fi
+
+          echo "PROJECT_ID=$TARGET_PROJECT" >> $GITHUB_ENV
+          echo "DB_PASSWORD=$TARGET_DB_PASS" >> $GITHUB_ENV
 
       - name: Push Database Migrations
-        run: supabase db push --password ${{ env.DB_PASSWORD }}
+        run: |
+          supabase db push --include-all --db-url "postgresql://postgres:${{ env.DB_PASSWORD }}@db.${{ env.PROJECT_ID }}.supabase.co:5432/postgres"
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
       - name: Deploy Edge Functions
-        run: supabase functions deploy --project-ref ${{ env.PROJECT_ID }}
+        run: |
+          supabase functions deploy --project-ref "${{ env.PROJECT_ID }}" --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
