@@ -155,6 +155,66 @@ function parseNumericPrice(priceStr: string): number {
   return isNaN(lastNum) ? 0 : lastNum;
 }
 
+function parseSubValue(raw: any): { text: string; num: number } {
+  if (!raw || raw === '-' || raw === '--') return { text: '-', num: 0 };
+  const cleaned = cleanHtml(String(raw));
+  const match = cleaned.match(/([0-9]+(?:\.[0-9]+)?)/);
+  if (match) {
+    const num = parseFloat(match[1]);
+    return {
+      text: `${num}x`,
+      num: num
+    };
+  }
+  return { text: cleaned || '-', num: 0 };
+}
+
+function parseSubTotal(raw: any): { total: string; totalNum: number; updatedAt: string } {
+  if (!raw) return { total: '-', totalNum: 0, updatedAt: '' };
+  const str = String(raw);
+  const totalValMatch = str.match(/<b>([0-9]+(?:\.[0-9]+)?)<\/b>/i);
+  const totalNum = totalValMatch ? parseFloat(totalValMatch[1]) : 0;
+  const totalText = totalValMatch ? `${totalNum}x` : cleanHtml(str);
+  
+  let updatedAt = '';
+  const timeMatch = str.match(/<small[^>]*>.*?<b>([^<]+)<\/b>.*?<\/small>/i)
+    || str.match(/<small[^>]*>([^<]+)<\/small>/i);
+  if (timeMatch) {
+    updatedAt = cleanHtml(timeMatch[1]);
+  }
+  return { total: totalText || '-', totalNum, updatedAt };
+}
+
+function parseSubscriptionDetails(subItem: any): any {
+  if (!subItem) return null;
+  const { total, totalNum, updatedAt } = parseSubTotal(subItem.Total);
+  const qib = parseSubValue(subItem.QIB);
+  const nii = parseSubValue(subItem.NII);
+  const shni = parseSubValue(subItem.SHNI);
+  const bhni = parseSubValue(subItem.BHNI);
+  const rii = parseSubValue(subItem.RII);
+  const anchorAvailable = Boolean(subItem.Anchor && subItem.Anchor.includes('✅'));
+
+  return {
+    total,
+    total_num: totalNum,
+    qib: qib.text,
+    qib_num: qib.num,
+    nii: nii.text,
+    nii_num: nii.num,
+    shni: shni.text,
+    shni_num: shni.num,
+    bhni: bhni.text,
+    bhni_num: bhni.num,
+    rii: rii.text,
+    rii_num: rii.num,
+    anchor_available: anchorAvailable,
+    anchor_status: anchorAvailable ? '✅ Allocated' : (subItem.Anchor && subItem.Anchor.includes('❌') ? '❌ Not Available' : '-'),
+    updated_at: updatedAt,
+    closing_date: subItem['Closing Date'] || ''
+  };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -171,24 +231,52 @@ serve(async (req) => {
       authHeader && !serviceRoleKey ? { global: { headers: { Authorization: authHeader } } } : undefined
     );
 
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth() + 1;
+    const fy = month >= 4 ? `${year}-${String(year + 1).slice(-2)}` : `${year - 1}-${String(year).slice(-2)}`;
     const cacheBuster = Date.now();
-    const apiUrl = `https://webnodejs.investorgain.com/cloud/v2/report/data-read/331/1/8/2026/2026-27/0/ipo?search=&v=19-18&_t=${cacheBuster}`;
-    const response = await fetch(apiUrl, {
-      headers: {
-        'Cache-Control': 'no-cache, no-store, must-revalidate',
-        'Pragma': 'no-cache',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Referer': 'https://www.investorgain.com/'
-      }
-    });
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch from InvestorGain API: ${response.status} ${response.statusText}`);
+    const report331Url = `https://webnodejs.investorgain.com/cloud/v2/report/data-read/331/1/${month}/${year}/${fy}/0/ipo?search=&v=19-18&_t=${cacheBuster}`;
+    const report333Url = `https://webnodejs.investorgain.com/cloud/v2/report/data-read/333/1/${month}/${year}/${fy}/0/ipo?search=&v=18-18&_t=${cacheBuster}`;
+
+    const fetchHeaders = {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Referer': 'https://www.investorgain.com/'
+    };
+
+    const [res331, res333] = await Promise.allSettled([
+      fetch(report331Url, { headers: fetchHeaders }),
+      fetch(report333Url, { headers: fetchHeaders })
+    ]);
+
+    if (res331.status !== 'fulfilled' || !res331.value.ok) {
+      throw new Error(`Failed to fetch from InvestorGain Report 331 API`);
     }
 
-    const json = await response.json();
-    const rawList = json.reportTableData || [];
+    const json331 = await res331.value.json();
+    const rawList = json331.reportTableData || [];
+
+    // Map Report 333 (Subscription) data by ~id
+    const subMap = new Map<number | string, any>();
+    if (res333.status === 'fulfilled' && res333.value.ok) {
+      try {
+        const json333 = await res333.value.json();
+        const rawSubList = json333.reportTableData || [];
+        for (const sItem of rawSubList) {
+          const sId = sItem['~id'];
+          if (sId) {
+            subMap.set(String(sId), sItem);
+            subMap.set(Number(sId), sItem);
+          }
+        }
+      } catch (subErr) {
+        console.warn('Warning: Could not parse Report 333 subscription JSON:', subErr);
+      }
+    }
 
     const formattedRecords: any[] = [];
 
@@ -211,7 +299,16 @@ serve(async (req) => {
       const priceNum = parseNumericPrice(priceStr);
       const lotSize = item.Lot ? parseInt(String(item.Lot).replace(/\D/g, ''), 10) || 1 : 1;
 
-      const anchorAvailable = Boolean(item.Anchor && item.Anchor.includes('✅'));
+      const subItem = subMap.get(id);
+      const subDetails = subItem ? parseSubscriptionDetails(subItem) : null;
+      const finalSubscription = (subDetails && subDetails.total && subDetails.total !== '-')
+        ? subDetails.total
+        : cleanHtml(item.Sub || '-');
+
+      const anchorAvailable = Boolean(
+        (subDetails && subDetails.anchor_available) ||
+        (item.Anchor && item.Anchor.includes('✅'))
+      );
       const investorgainUrl = item['~urlrewrite_folder_name'] 
         ? `https://www.investorgain.com${item['~urlrewrite_folder_name']}`
         : null;
@@ -231,7 +328,8 @@ serve(async (req) => {
         ipo_size: cleanHtml(item['IPO Size'] || ''),
         lot_size: lotSize,
         pe_ratio: item['~P/E'] ? String(item['~P/E']).trim() : '--',
-        subscription: cleanHtml(item.Sub || '-'),
+        subscription: finalSubscription,
+        subscription_details: subDetails,
         open_date: cleanDate(item.Open || ''),
         close_date: cleanDate(item.Close || ''),
         boa_date: cleanDate(item['BoA Dt'] || ''),
@@ -245,7 +343,7 @@ serve(async (req) => {
         investorgain_url: investorgainUrl,
         allotment_url: allotmentUrl,
         highlight_row: item['~Highlight_Row'] || '',
-        raw_json: item,
+        raw_json: { ...item, subscription_details: subDetails },
         updated_at: new Date().toISOString()
       });
     }
@@ -256,8 +354,9 @@ serve(async (req) => {
         .from('mainboard_ipos')
         .upsert(formattedRecords, { onConflict: 'id', count: 'exact' });
 
-      if (upsertErr && upsertErr.message.includes('allotment_url')) {
-        const cleanedRecords = formattedRecords.map(({ allotment_url, ...rest }) => rest);
+      // Fallback if schema doesn't have subscription_details or allotment_url yet
+      if (upsertErr && (upsertErr.message.includes('subscription_details') || upsertErr.message.includes('allotment_url'))) {
+        const cleanedRecords = formattedRecords.map(({ subscription_details, allotment_url, ...rest }) => rest);
         const retryRes = await supabaseAdmin
           .from('mainboard_ipos')
           .upsert(cleanedRecords, { onConflict: 'id', count: 'exact' });
@@ -272,6 +371,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({ 
       success: true, 
       fetched: rawList.length, 
+      subscriptionMapped: subMap.size,
       upserted: upsertedCount 
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
