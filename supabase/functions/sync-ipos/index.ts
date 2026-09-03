@@ -537,9 +537,14 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
     const openDate = item.sort_open;
     const listingDate = item.sort_listing;
     
+    // Explicitly exclude listed IPOs from triggering any alerts
+    const isListed = String(item.status || '').toLowerCase().includes('listed') || Boolean(listingDate && todayStr >= listingDate);
+    if (isListed) {
+      continue;
+    }
+
     const isOpeningDay = openDate && todayStr === openDate;
-    const isPastListing = listingDate && todayStr > listingDate;
-    const isActiveWindow = openDate && todayStr >= openDate && !isPastListing;
+    const isActiveWindow = openDate && todayStr >= openDate && !isListed;
 
     let triggeredAlertType: 'OPENING_DAY_HIGH_GMP' | 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20' | null = null;
     let prevGmpPercent = state ? Number(state.last_gmp_percent || 0) : 0;
