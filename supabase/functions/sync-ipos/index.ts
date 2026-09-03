@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.32.0'
+import nodemailer from "npm:nodemailer@6.9.13"
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -33,7 +34,6 @@ function parseStatus(
 ): { status: string; statusBadge: string; allotmentUrl: string | null } {
   if (!nameHtml) nameHtml = '';
 
-  // Extract allotment registrar URL if present in Name HTML
   let allotmentUrl: string | null = null;
   const allotMatch = nameHtml.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(?:<span[^>]*>)?Allotted/i)
     || nameHtml.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*title=["']Check Allotment["']/i)
@@ -44,12 +44,10 @@ function parseStatus(
 
   const isAllotted = Boolean(allotmentUrl || nameHtml.includes('Allotted'));
 
-  // Clean out allotment links so bg-success inside "Allotted" links does not cause false positives
   const cleanNameHtml = nameHtml
     .replace(/<a [^>]*allotment[^>]*>.*?<\/a>/gi, '')
     .replace(/<span [^>]*>Allotted<\/span>/gi, '');
 
-  // 1. Explicit HTML badges from InvestorGain
   if (cleanNameHtml.includes('L@')) {
     const match = cleanNameHtml.match(/L@[^<]+/);
     const badgeText = match ? match[0] : 'Listed';
@@ -59,7 +57,6 @@ function parseStatus(
     return { status: 'Upcoming', statusBadge: 'Upcoming', allotmentUrl };
   }
 
-  // Allotted IPOs MUST be categorized as Closed!
   if (isAllotted || cleanNameHtml.includes('bg-primary') || cleanNameHtml.includes('>C<')) {
     return { status: 'Closed', statusBadge: isAllotted ? 'Allotted' : 'Closed', allotmentUrl };
   }
@@ -68,11 +65,10 @@ function parseStatus(
     return { status: 'Open', statusBadge: 'Open', allotmentUrl };
   }
 
-  // 2. Accurate date-based status computation (IST Date)
   const now = new Date();
   const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
   const istDate = new Date(utcMs + (5.5 * 3600000));
-  const todayStr = istDate.toISOString().split('T')[0]; // YYYY-MM-DD in IST
+  const todayStr = istDate.toISOString().split('T')[0];
 
   const openStr = srtOpen ? String(srtOpen).trim() : null;
   const closeStr = srtClose ? String(srtClose).trim() : null;
@@ -108,7 +104,6 @@ function parseGmp(gmpHtml: string, calcPercent?: string): { gmpAmount: number; g
   if (!gmpHtml) return { gmpAmount: 0, gmpPercent: 0, gmpTrend: '' };
 
   let gmpAmount = 0;
-  // Match value inside <b> tag after ₹/&#8377;
   const valMatch = gmpHtml.match(/(?:&#8377;|₹)\s*<b>([^<]+)<\/b>/i);
   if (valMatch && valMatch[1]) {
     const parsed = parseFloat(valMatch[1].replace(/,/g, ''));
@@ -138,7 +133,6 @@ function parseGmp(gmpHtml: string, calcPercent?: string): { gmpAmount: number; g
 
 function parseRatingFlames(ratingHtml: string): number {
   if (!ratingHtml) return 0;
-  // Count &#128293; entities or 🔥 emojis
   const entityMatches = ratingHtml.match(/&#128293;/g);
   if (entityMatches) return entityMatches.length;
   const emojiMatches = ratingHtml.match(/🔥/g);
@@ -148,55 +142,46 @@ function parseRatingFlames(ratingHtml: string): number {
 
 function parseNumericPrice(priceStr: string): number {
   if (!priceStr) return 0;
-  // Extract max/upper price from range e.g. "100-105" -> 105 or "53" -> 53
   const numbers = priceStr.match(/\d+(?:\.\d+)?/g);
   if (!numbers || numbers.length === 0) return 0;
   const lastNum = parseFloat(numbers[numbers.length - 1]);
   return isNaN(lastNum) ? 0 : lastNum;
 }
 
-function parseSubValue(raw: any): { text: string; num: number } {
-  if (!raw || raw === '-' || raw === '--') return { text: '-', num: 0 };
-  const cleaned = cleanHtml(String(raw));
-  const match = cleaned.match(/([0-9]+(?:\.[0-9]+)?)/);
-  if (match) {
-    const num = parseFloat(match[1]);
-    return {
-      text: `${num}x`,
-      num: num
-    };
-  }
-  return { text: cleaned || '-', num: 0 };
-}
+function parseSubscriptionDetails(subItem: any): any {
+  if (!subItem) return null;
 
-function parseSubTotal(raw: any): { total: string; totalNum: number; updatedAt: string } {
-  if (!raw) return { total: '-', totalNum: 0, updatedAt: '' };
-  const str = String(raw);
-  const totalValMatch = str.match(/<b>([0-9]+(?:\.[0-9]+)?)<\/b>/i);
-  const totalNum = totalValMatch ? parseFloat(totalValMatch[1]) : 0;
-  const totalText = totalValMatch ? `${totalNum}x` : cleanHtml(str);
-  
+  const parseField = (val: any) => {
+    if (!val || val === '-' || val === '--') return { text: '-', num: 0 };
+    const str = String(val).replace(/<[^>]*>/g, '').trim();
+    const match = str.match(/([0-9]+(?:\.[0-9]+)?)/);
+    return {
+      text: match ? `${match[1]}x` : (str || '-'),
+      num: match ? parseFloat(match[1]) : 0
+    };
+  };
+
+  const totalMatch = String(subItem.Total || '').match(/<b>([0-9]+(?:\.[0-9]+)?)<\/b>/i) 
+    || String(subItem.Total || '').match(/([0-9]+(?:\.[0-9]+)?)/);
+  const totalNum = totalMatch ? parseFloat(totalMatch[1]) : 0;
+  const totalText = totalMatch ? `${totalNum}x` : cleanHtml(subItem.Total || '-');
+
+  const qib = parseField(subItem.QIB);
+  const nii = parseField(subItem.NII);
+  const shni = parseField(subItem.sHNI);
+  const bhni = parseField(subItem.bHNI);
+  const rii = parseField(subItem.RII);
+  const anchorAvailable = Boolean(subItem.Anchor && subItem.Anchor.includes('✅'));
+
   let updatedAt = '';
-  const timeMatch = str.match(/<small[^>]*>.*?<b>([^<]+)<\/b>.*?<\/small>/i)
-    || str.match(/<small[^>]*>([^<]+)<\/small>/i);
+  const timeMatch = String(subItem.Total || '').match(/<small[^>]*>.*?<b>([^<]+)<\/b>.*?<\/small>/i)
+    || String(subItem.Total || '').match(/<small[^>]*>([^<]+)<\/small>/i);
   if (timeMatch) {
     updatedAt = cleanHtml(timeMatch[1]);
   }
-  return { total: totalText || '-', totalNum, updatedAt };
-}
-
-function parseSubscriptionDetails(subItem: any): any {
-  if (!subItem) return null;
-  const { total, totalNum, updatedAt } = parseSubTotal(subItem.Total);
-  const qib = parseSubValue(subItem.QIB);
-  const nii = parseSubValue(subItem.NII);
-  const shni = parseSubValue(subItem.SHNI);
-  const bhni = parseSubValue(subItem.BHNI);
-  const rii = parseSubValue(subItem.RII);
-  const anchorAvailable = Boolean(subItem.Anchor && subItem.Anchor.includes('✅'));
 
   return {
-    total,
+    total: totalText,
     total_num: totalNum,
     qib: qib.text,
     qib_num: qib.num,
@@ -214,6 +199,465 @@ function parseSubscriptionDetails(subItem: any): any {
     closing_date: subItem['Closing Date'] || ''
   };
 }
+
+// -----------------------------------------------------------------------------
+// Alert & Email Helpers
+// -----------------------------------------------------------------------------
+
+async function getAlertRecipients(supabaseAdmin: any): Promise<string[]> {
+  const recipients = new Set<string>();
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers();
+    if (!error && data?.users) {
+      for (const u of data.users) {
+        if (u.email && u.email_confirmed_at) {
+          recipients.add(u.email.trim().toLowerCase());
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Could not query auth.users for alert recipients:', err);
+  }
+
+  const fallbackEnv = Deno.env.get('ALERT_RECIPIENT_EMAIL');
+  if (fallbackEnv) {
+    for (const email of fallbackEnv.split(',')) {
+      if (email.trim()) recipients.add(email.trim().toLowerCase());
+    }
+  }
+
+  if (recipients.size === 0) {
+    recipients.add('deshmukhparth14@gmail.com');
+  }
+
+  return Array.from(recipients);
+}
+
+async function sendAlertEmailViaSmtp({
+  recipients,
+  ipo,
+  alertType,
+  prevGmp,
+  currentGmp
+}: {
+  recipients: string[];
+  ipo: any;
+  alertType: 'OPENING_DAY_HIGH_GMP' | 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20';
+  prevGmp: number;
+  currentGmp: number;
+}) {
+  const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com';
+  const smtpPort = Number(Deno.env.get('SMTP_PORT') || 465);
+  const smtpUser = Deno.env.get('SMTP_USER') || Deno.env.get('GMAIL_USER') || 'deshmukhparth14@gmail.com';
+  const smtpPass = Deno.env.get('SMTP_PASS') || Deno.env.get('GMAIL_APP_PASSWORD');
+
+  if (!smtpPass) {
+    console.warn('Gmail SMTP password (SMTP_PASS / GMAIL_APP_PASSWORD) not configured. Skipping email dispatch.');
+    return { success: false, subject: '', error: 'SMTP credentials missing' };
+  }
+
+  const isSecure = smtpPort === 465;
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure,
+    auth: {
+      user: smtpUser,
+      pass: smtpPass
+    }
+  });
+
+  let subject = '';
+  let badgeText = '';
+  let badgeColor = '';
+  let headline = '';
+  let summaryText = '';
+
+  const isSme = String(ipo.category || '').toUpperCase().includes('SME');
+  const categoryLabel = isSme ? 'SME IPO' : 'Mainboard IPO';
+
+  if (alertType === 'GMP_DROPPED_BELOW_20') {
+    subject = `⚠️ FolioX Alert: ${ipo.ipo_name} GMP Dropped Below 20% (${currentGmp.toFixed(1)}%)`;
+    badgeText = 'CRITICAL ALERT: GMP DROPPED BELOW 20%';
+    badgeColor = '#dc2626';
+    headline = `${ipo.ipo_name} GMP has dropped to ${currentGmp.toFixed(1)}%`;
+    summaryText = `The Grey Market Premium for <strong>${ipo.ipo_name}</strong> (${categoryLabel}) has dropped below your 20% threshold from a previous <strong>${prevGmp.toFixed(1)}%</strong> to <strong>${currentGmp.toFixed(1)}%</strong> (₹${ipo.gmp_amount}). Please review your application or exit strategy before closing/listing.`;
+  } else if (alertType === 'GMP_RISEN_ABOVE_20') {
+    subject = `🚀 FolioX Alert: ${ipo.ipo_name} GMP Surged Above 20% (${currentGmp.toFixed(1)}%)`;
+    badgeText = 'OPPORTUNITY ALERT: GMP CROSSED 20%';
+    badgeColor = '#16a34a';
+    headline = `${ipo.ipo_name} GMP surged to ${currentGmp.toFixed(1)}%`;
+    summaryText = `The Grey Market Premium for <strong>${ipo.ipo_name}</strong> (${categoryLabel}) has surged back above 20%, currently at <strong>${currentGmp.toFixed(1)}%</strong> (₹${ipo.gmp_amount}). Previous level was ${prevGmp.toFixed(1)}%.`;
+  } else {
+    subject = `🟢 FolioX Alert: ${ipo.ipo_name} Opens Today with ${currentGmp.toFixed(1)}% GMP`;
+    badgeText = 'BIDDING OPENS TODAY (GMP > 20%)';
+    badgeColor = '#059669';
+    headline = `${ipo.ipo_name} opens today with strong GMP of ${currentGmp.toFixed(1)}%`;
+    summaryText = `Bidding opens today for <strong>${ipo.ipo_name}</strong> (${categoryLabel}) with an attractive Grey Market Premium of <strong>${currentGmp.toFixed(1)}%</strong> (₹${ipo.gmp_amount} / share).`;
+  }
+
+  const expectedListingPrice = (ipo.price_num || 0) + (ipo.gmp_amount || 0);
+  const estProfitPerLot = (ipo.gmp_amount || 0) * (ipo.lot_size || 1);
+  const minInvestment = (ipo.price_num || 0) * (ipo.lot_size || 1);
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${subject}</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f8fafc;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; padding: 30px 10px;">
+          <tr>
+            <td align="center">
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; background-color: #1e293b; border-radius: 16px; overflow: hidden; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);">
+                
+                <!-- HEADER -->
+                <tr>
+                  <td style="padding: 24px 28px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155;">
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0">
+                      <tr>
+                        <td>
+                          <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #38bdf8; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
+                          <h1 style="margin: 6px 0 0 0; font-size: 20px; font-weight: 700; color: #ffffff;">${ipo.ipo_name}</h1>
+                        </td>
+                        <td align="right">
+                          <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; background-color: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">${categoryLabel}</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- BADGE & HEADLINE -->
+                <tr>
+                  <td style="padding: 24px 28px 12px 28px;">
+                    <div style="display: inline-block; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: ${badgeColor}; margin-bottom: 14px;">
+                      ${badgeText}
+                    </div>
+                    <h2 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 700; color: #ffffff;">${headline}</h2>
+                    <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #94a3b8;">${summaryText}</p>
+                  </td>
+                </tr>
+
+                <!-- METRICS GRID -->
+                <tr>
+                  <td style="padding: 16px 28px;">
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; border-radius: 12px; border: 1px solid #334155; padding: 16px;">
+                      <tr>
+                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Current GMP</span>
+                          <span style="font-size: 20px; font-weight: 800; color: ${currentGmp >= 20 ? '#10b981' : '#f43f5e'};">₹${ipo.gmp_amount} (${currentGmp.toFixed(1)}%)</span>
+                        </td>
+                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Issue Price</span>
+                          <span style="font-size: 20px; font-weight: 800; color: #ffffff;">₹${ipo.price_str || ipo.price_num || '--'}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Est. Listing Price</span>
+                          <span style="font-size: 16px; font-weight: 700; color: #38bdf8;">₹${expectedListingPrice}</span>
+                        </td>
+                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Est. Profit (1 Lot)</span>
+                          <span style="font-size: 16px; font-weight: 700; color: #10b981;">+₹${estProfitPerLot.toLocaleString('en-IN')}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td width="50%" style="padding: 8px;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Lot Size</span>
+                          <span style="font-size: 14px; font-weight: 600; color: #ffffff;">${ipo.lot_size} shares (₹${minInvestment.toLocaleString('en-IN')})</span>
+                        </td>
+                        <td width="50%" style="padding: 8px;">
+                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Total Subscription</span>
+                          <span style="font-size: 14px; font-weight: 600; color: #f59e0b;">${ipo.subscription || '--'}</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- TIMELINE -->
+                <tr>
+                  <td style="padding: 4px 28px 20px 28px;">
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="font-size: 12px; color: #94a3b8;">
+                      <tr>
+                        <td style="padding: 4px 0;"><strong>Bidding Opens:</strong> ${ipo.open_date || 'TBA'}</td>
+                        <td style="padding: 4px 0;"><strong>Bidding Closes:</strong> ${ipo.close_date || 'TBA'}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 4px 0;"><strong>Allotment Date:</strong> ${ipo.boa_date || 'TBA'}</td>
+                        <td style="padding: 4px 0;"><strong>Listing Date:</strong> ${ipo.listing_date || 'TBA'}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+                <!-- ACTION BUTTON -->
+                <tr>
+                  <td align="center" style="padding: 12px 28px 30px 28px;">
+                    <a href="https://folioxweb.github.io/foliox/uat/#/ipo/${ipo.id}" target="_blank" style="display: inline-block; padding: 12px 28px; background-color: #0284c7; color: #ffffff; text-decoration: none; border-radius: 10px; font-size: 13px; font-weight: 700; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.4);">
+                      View Full Details on FolioX &rarr;
+                    </a>
+                  </td>
+                </tr>
+
+                <!-- FOOTER -->
+                <tr>
+                  <td style="padding: 18px 28px; background-color: #0f172a; border-top: 1px solid #334155; text-align: center;">
+                    <p style="margin: 0; font-size: 11px; color: #64748b; line-height: 1.5;">
+                      This real-time notification was dispatched automatically by FolioX IPO Engine based on 20% GMP threshold transitions.<br>
+                      &copy; 2026 FolioX Wealth Tracker. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+
+  const info = await transporter.sendMail({
+    from: `"FolioX IPO Alerts" <${smtpUser}>`,
+    to: smtpUser,
+    bcc: recipients.length > 0 ? recipients : undefined,
+    subject,
+    html
+  });
+
+  return {
+    success: true,
+    subject,
+    messageId: info.messageId
+  };
+}
+
+async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[]) {
+  if (!formattedRecords || formattedRecords.length === 0) return;
+
+  const now = new Date();
+  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const istDate = new Date(utcMs + (5.5 * 3600000));
+  const todayStr = istDate.toISOString().split('T')[0];
+
+  const ipoIds = formattedRecords.map(r => r.id);
+
+  // 1. Fetch latest recorded history for each IPO
+  let latestHistoryMap = new Map<number, any>();
+  try {
+    const { data: recentHistory } = await supabaseAdmin
+      .from('ipo_gmp_history')
+      .select('ipo_id, gmp_amount, gmp_percent, recorded_date, recorded_at')
+      .in('ipo_id', ipoIds)
+      .order('recorded_at', { ascending: false });
+
+    if (recentHistory) {
+      for (const h of recentHistory) {
+        if (!latestHistoryMap.has(h.ipo_id)) {
+          latestHistoryMap.set(h.ipo_id, h);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn('Could not query ipo_gmp_history:', err.message);
+  }
+
+  // 2. Insert new historical snapshots if GMP changed or if no snapshot exists today
+  const historyInserts: any[] = [];
+  for (const item of formattedRecords) {
+    const latest = latestHistoryMap.get(item.id);
+    const hasToday = latest && latest.recorded_date === todayStr;
+    const gmpChanged = !latest || Number(latest.gmp_amount) !== Number(item.gmp_amount) || Number(latest.gmp_percent) !== Number(item.gmp_percent);
+
+    if (gmpChanged || !hasToday) {
+      historyInserts.push({
+        ipo_id: item.id,
+        ipo_name: item.ipo_name,
+        category: item.category || 'IPO',
+        price_num: item.price_num || 0,
+        gmp_amount: item.gmp_amount || 0,
+        gmp_percent: item.gmp_percent || 0,
+        gmp_trend: item.gmp_trend || '',
+        status: item.status || '',
+        subscription: item.subscription || '',
+        recorded_date: todayStr,
+        recorded_at: new Date().toISOString()
+      });
+    }
+  }
+
+  if (historyInserts.length > 0) {
+    try {
+      await supabaseAdmin.from('ipo_gmp_history').insert(historyInserts);
+    } catch (histErr: any) {
+      console.warn('Warning: Could not insert ipo_gmp_history:', histErr.message);
+    }
+  }
+
+  // 3. Fetch existing alert states for transition detection
+  let stateMap = new Map<number, any>();
+  try {
+    const { data: existingStates } = await supabaseAdmin
+      .from('ipo_alert_state')
+      .select('*')
+      .in('ipo_id', ipoIds);
+
+    if (existingStates) {
+      for (const s of existingStates) {
+        stateMap.set(s.ipo_id, s);
+      }
+    }
+  } catch (stateReadErr: any) {
+    console.warn('Warning: Could not read ipo_alert_state:', stateReadErr.message);
+  }
+
+  const recipients = await getAlertRecipients(supabaseAdmin);
+
+  const stateUpserts: any[] = [];
+  const alertLogs: any[] = [];
+  const emailsToSend: Array<{
+    ipo: any;
+    alertType: 'OPENING_DAY_HIGH_GMP' | 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20';
+    prevGmp: number;
+    currentGmp: number;
+  }> = [];
+
+  for (const item of formattedRecords) {
+    const currentGmp = Number(item.gmp_percent || 0);
+    const newBand = currentGmp >= 20 ? 'ABOVE_20' : 'BELOW_20';
+    const state = stateMap.get(item.id);
+
+    const openDate = item.sort_open;
+    const listingDate = item.sort_listing;
+    
+    const isOpeningDay = openDate && todayStr === openDate;
+    const isPastListing = listingDate && todayStr > listingDate;
+    const isActiveWindow = openDate && todayStr >= openDate && !isPastListing;
+
+    let triggeredAlertType: 'OPENING_DAY_HIGH_GMP' | 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20' | null = null;
+    let prevGmpPercent = state ? Number(state.last_gmp_percent || 0) : 0;
+
+    if (!state) {
+      if (isOpeningDay && newBand === 'ABOVE_20') {
+        triggeredAlertType = 'OPENING_DAY_HIGH_GMP';
+      }
+      stateUpserts.push({
+        ipo_id: item.id,
+        ipo_name: item.ipo_name,
+        category: item.category || 'IPO',
+        last_gmp_percent: currentGmp,
+        current_band: newBand,
+        last_alert_type: triggeredAlertType,
+        last_alerted_at: triggeredAlertType ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString()
+      });
+    } else {
+      const prevBand = state.current_band;
+
+      if (isActiveWindow) {
+        if (prevBand === 'ABOVE_20' && newBand === 'BELOW_20') {
+          triggeredAlertType = 'GMP_DROPPED_BELOW_20';
+        } else if (prevBand === 'BELOW_20' && newBand === 'ABOVE_20') {
+          triggeredAlertType = 'GMP_RISEN_ABOVE_20';
+        } else if (isOpeningDay && newBand === 'ABOVE_20' && state.last_alert_type !== 'OPENING_DAY_HIGH_GMP') {
+          triggeredAlertType = 'OPENING_DAY_HIGH_GMP';
+        }
+      }
+
+      stateUpserts.push({
+        ipo_id: item.id,
+        ipo_name: item.ipo_name,
+        category: item.category || 'IPO',
+        last_gmp_percent: currentGmp,
+        current_band: newBand,
+        last_alert_type: triggeredAlertType || state.last_alert_type,
+        last_alerted_at: triggeredAlertType ? new Date().toISOString() : state.last_alerted_at,
+        updated_at: new Date().toISOString()
+      });
+    }
+
+    if (triggeredAlertType) {
+      emailsToSend.push({
+        ipo: item,
+        alertType: triggeredAlertType,
+        prevGmp: prevGmpPercent,
+        currentGmp
+      });
+    }
+  }
+
+  if (stateUpserts.length > 0) {
+    try {
+      await supabaseAdmin
+        .from('ipo_alert_state')
+        .upsert(stateUpserts, { onConflict: 'ipo_id' });
+    } catch (stateWriteErr: any) {
+      console.warn('Warning: Could not upsert ipo_alert_state:', stateWriteErr.message);
+    }
+  }
+
+  for (const alertItem of emailsToSend) {
+    try {
+      const emailResult = await sendAlertEmailViaSmtp({
+        recipients,
+        ipo: alertItem.ipo,
+        alertType: alertItem.alertType,
+        prevGmp: alertItem.prevGmp,
+        currentGmp: alertItem.currentGmp
+      });
+
+      alertLogs.push({
+        ipo_id: alertItem.ipo.id,
+        ipo_name: alertItem.ipo.ipo_name,
+        category: alertItem.ipo.category || 'IPO',
+        alert_type: alertItem.alertType,
+        gmp_percent: alertItem.currentGmp,
+        previous_gmp_percent: alertItem.prevGmp,
+        recipients,
+        recipient_count: recipients.length,
+        subject: emailResult.subject,
+        sent_status: emailResult.success ? 'SENT' : 'FAILED',
+        error_message: emailResult.error || null,
+        created_at: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('Error sending alert email for IPO:', alertItem.ipo.ipo_name, err);
+      alertLogs.push({
+        ipo_id: alertItem.ipo.id,
+        ipo_name: alertItem.ipo.ipo_name,
+        category: alertItem.ipo.category || 'IPO',
+        alert_type: alertItem.alertType,
+        gmp_percent: alertItem.currentGmp,
+        previous_gmp_percent: alertItem.prevGmp,
+        recipients,
+        recipient_count: recipients.length,
+        subject: `FolioX IPO Alert: ${alertItem.ipo.ipo_name}`,
+        sent_status: 'FAILED',
+        error_message: err.message,
+        created_at: new Date().toISOString()
+      });
+    }
+  }
+
+  if (alertLogs.length > 0) {
+    try {
+      await supabaseAdmin.from('ipo_email_alerts').insert(alertLogs);
+    } catch (logErr: any) {
+      console.warn('Warning: Could not insert ipo_email_alerts:', logErr.message);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Main Handler
+// -----------------------------------------------------------------------------
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -260,7 +704,6 @@ serve(async (req) => {
     const json331 = await res331.value.json();
     const rawList = json331.reportTableData || [];
 
-    // Map Report 333 (Subscription) data by ~id
     const subMap = new Map<number | string, any>();
     if (res333.status === 'fulfilled' && res333.value.ok) {
       try {
@@ -354,7 +797,6 @@ serve(async (req) => {
         .from('mainboard_ipos')
         .upsert(formattedRecords, { onConflict: 'id', count: 'exact' });
 
-      // Fallback if schema doesn't have subscription_details or allotment_url yet
       if (upsertErr && (upsertErr.message.includes('subscription_details') || upsertErr.message.includes('allotment_url'))) {
         const cleanedRecords = formattedRecords.map(({ subscription_details, allotment_url, ...rest }) => rest);
         const retryRes = await supabaseAdmin
@@ -366,6 +808,13 @@ serve(async (req) => {
 
       if (upsertErr) throw upsertErr;
       upsertedCount = count ?? formattedRecords.length;
+
+      // Real-time History Logging and Transition Alerts
+      try {
+        await logGmpHistoryAndAlerts(supabaseAdmin, formattedRecords);
+      } catch (alertEngineErr) {
+        console.error('Error during logGmpHistoryAndAlerts execution:', alertEngineErr);
+      }
     }
 
     return new Response(JSON.stringify({ 
