@@ -702,6 +702,62 @@ serve(async (req) => {
       authHeader && !serviceRoleKey ? { global: { headers: { Authorization: authHeader } } } : undefined
     );
 
+    // ── On-demand Test Dispatcher ──
+    const url = new URL(req.url);
+    const testMode = url.searchParams.get('test') || url.searchParams.get('test_type');
+    if (testMode) {
+      const recipients = await getAlertRecipients(supabaseAdmin);
+      const alertType = testMode === 'drop'
+        ? 'GMP_DROPPED_BELOW_20'
+        : testMode === 'surge'
+        ? 'GMP_RISEN_ABOVE_20'
+        : 'OPENING_DAY_HIGH_GMP';
+
+      const sampleIpo = {
+        id: 1662,
+        ipo_name: 'Pranav Constructions',
+        category: 'IPO',
+        price_num: 124,
+        gmp_amount: 39,
+        gmp_percent: 31.45,
+        lot_size: 100
+      };
+
+      const emailResult = await sendAlertEmailViaSmtp({
+        recipients,
+        ipo: sampleIpo,
+        alertType: alertType as any,
+        prevGmp: alertType === 'GMP_DROPPED_BELOW_20' ? 28.5 : 12.0,
+        currentGmp: alertType === 'GMP_DROPPED_BELOW_20' ? 14.5 : 31.45
+      });
+
+      await supabaseAdmin.from('ipo_email_alerts').insert([{
+        ipo_id: sampleIpo.id,
+        ipo_name: sampleIpo.ipo_name,
+        category: sampleIpo.category,
+        alert_type: alertType,
+        gmp_percent: alertType === 'GMP_DROPPED_BELOW_20' ? 14.5 : 31.45,
+        previous_gmp_percent: alertType === 'GMP_DROPPED_BELOW_20' ? 28.5 : 12.0,
+        recipients,
+        recipient_count: recipients.length,
+        subject: emailResult.subject || `FolioX Test Alert: ${sampleIpo.ipo_name}`,
+        sent_status: emailResult.success ? 'SENT' : 'FAILED',
+        error_message: emailResult.error || null,
+        created_at: new Date().toISOString()
+      }]);
+
+      return new Response(JSON.stringify({
+        success: emailResult.success,
+        mode: 'TEST_DISPATCH',
+        alert_type: alertType,
+        recipients,
+        emailResult
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: emailResult.success ? 200 : 500
+      });
+    }
+
     const now = new Date();
     const year = now.getFullYear();
     const month = now.getMonth() + 1;
