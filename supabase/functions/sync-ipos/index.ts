@@ -306,29 +306,61 @@ async function sendAlertEmailViaSmtp({
 
   const html = `
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
       <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <meta name="supported-color-schemes" content="light dark">
         <title>${subject}</title>
+        <style>
+          :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+          }
+          @media only screen and (max-width: 600px) {
+            .email-card { width: 100% !important; border-radius: 10px !important; }
+            .content-padding { padding: 18px 18px !important; }
+          }
+          @media (prefers-color-scheme: dark) {
+            body, .email-bg { background-color: #0b0f19 !important; }
+            .email-card { background-color: #151d2f !important; border-color: #243247 !important; }
+            .email-header { background-color: #151d2f !important; border-color: #243247 !important; }
+            .email-title { color: #f8fafc !important; }
+            .email-badge-pill { background-color: #1e293b !important; border-color: #334155 !important; color: #94a3b8 !important; }
+            .email-headline { color: #f8fafc !important; }
+            .email-desc { color: #cbd5e1 !important; }
+            .email-metric-card { background-color: #0f172a !important; border-color: #243247 !important; }
+            .email-metric-label { color: #94a3b8 !important; }
+            .email-metric-val { color: #f8fafc !important; }
+            .email-timeline { color: #94a3b8 !important; }
+            .email-timeline strong { color: #e2e8f0 !important; }
+            .email-footer { background-color: #0f172a !important; border-color: #243247 !important; color: #64748b !important; }
+          }
+        </style>
       </head>
-      <body style="margin: 0; padding: 0; background-color: #0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #f8fafc;">
-        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; padding: 30px 10px;">
+      <body class="email-bg" style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #0f172a;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 24px 10px;" class="email-bg">
           <tr>
             <td align="center">
-              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 600px; background-color: #1e293b; border-radius: 16px; overflow: hidden; border: 1px solid #334155; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);">
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; background-color: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);" class="email-card">
                 
+                <!-- TOP COLOR ACCENT BAR -->
+                <tr>
+                  <td style="height: 4px; background-color: ${badgeColor}; font-size: 0; line-height: 0;">&nbsp;</td>
+                </tr>
+
                 <!-- HEADER -->
                 <tr>
-                  <td style="padding: 24px 28px; background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border-bottom: 1px solid #334155;">
+                  <td style="padding: 22px 26px 16px 26px; background-color: #ffffff; border-bottom: 1px solid #f1f5f9;" class="email-header">
                     <table width="100%" border="0" cellspacing="0" cellpadding="0">
                       <tr>
                         <td>
-                          <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #38bdf8; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
-                          <h1 style="margin: 6px 0 0 0; font-size: 20px; font-weight: 700; color: #ffffff;">${ipo.ipo_name}</h1>
+                          <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #0284c7; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
+                          <h1 class="email-title" style="margin: 4px 0 0 0; font-size: 22px; font-weight: 800; color: #0f172a;">${ipo.ipo_name}</h1>
                         </td>
-                        <td align="right">
-                          <span style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; background-color: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3);">${categoryLabel}</span>
+                        <td align="right" valign="top">
+                          <span class="email-badge-pill" style="display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 11px; font-weight: 700; background-color: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;">${categoryLabel}</span>
                         </td>
                       </tr>
                     </table>
@@ -337,47 +369,47 @@ async function sendAlertEmailViaSmtp({
 
                 <!-- BADGE & HEADLINE -->
                 <tr>
-                  <td style="padding: 24px 28px 12px 28px;">
-                    <div style="display: inline-block; padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: ${badgeColor}; margin-bottom: 14px;">
+                  <td style="padding: 22px 26px 12px 26px;" class="content-padding">
+                    <div style="display: inline-block; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: ${badgeColor}; margin-bottom: 12px;">
                       ${badgeText}
                     </div>
-                    <h2 style="margin: 0 0 10px 0; font-size: 18px; font-weight: 700; color: #ffffff;">${headline}</h2>
-                    <p style="margin: 0; font-size: 14px; line-height: 1.6; color: #94a3b8;">${summaryText}</p>
+                    <h2 class="email-headline" style="margin: 0 0 8px 0; font-size: 17px; font-weight: 700; color: #0f172a;">${headline}</h2>
+                    <p class="email-desc" style="margin: 0; font-size: 14px; line-height: 1.6; color: #475569;">${summaryText}</p>
                   </td>
                 </tr>
 
                 <!-- METRICS GRID -->
                 <tr>
-                  <td style="padding: 16px 28px;">
-                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #0f172a; border-radius: 12px; border: 1px solid #334155; padding: 16px;">
+                  <td style="padding: 10px 26px 16px 26px;" class="content-padding">
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0; padding: 14px;" class="email-metric-card">
                       <tr>
-                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Current GMP</span>
-                          <span style="font-size: 20px; font-weight: 800; color: ${currentGmp >= 20 ? '#10b981' : '#f43f5e'};">₹${ipo.gmp_amount} (${currentGmp.toFixed(1)}%)</span>
+                        <td width="50%" style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Current GMP</span>
+                          <span style="font-size: 19px; font-weight: 800; color: ${currentGmp >= 20 ? '#059669' : '#dc2626'};">₹${ipo.gmp_amount} (${currentGmp.toFixed(1)}%)</span>
                         </td>
-                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Issue Price</span>
-                          <span style="font-size: 20px; font-weight: 800; color: #ffffff;">₹${ipo.price_str || ipo.price_num || '--'}</span>
+                        <td width="50%" style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Issue Price</span>
+                          <span class="email-metric-val" style="font-size: 19px; font-weight: 800; color: #0f172a;">₹${ipo.price_str || ipo.price_num || '--'}</span>
                         </td>
                       </tr>
                       <tr>
-                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Est. Listing Price</span>
-                          <span style="font-size: 16px; font-weight: 700; color: #38bdf8;">₹${expectedListingPrice}</span>
+                        <td width="50%" style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Est. Listing Price</span>
+                          <span style="font-size: 15px; font-weight: 700; color: #0284c7;">₹${expectedListingPrice}</span>
                         </td>
-                        <td width="50%" style="padding: 8px; border-bottom: 1px solid #1e293b;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Est. Profit (1 Lot)</span>
-                          <span style="font-size: 16px; font-weight: 700; color: #10b981;">+₹${estProfitPerLot.toLocaleString('en-IN')}</span>
+                        <td width="50%" style="padding: 8px 10px; border-bottom: 1px solid #e2e8f0;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Est. Profit (1 Lot)</span>
+                          <span style="font-size: 15px; font-weight: 700; color: #059669;">+₹${estProfitPerLot.toLocaleString('en-IN')}</span>
                         </td>
                       </tr>
                       <tr>
-                        <td width="50%" style="padding: 8px;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Lot Size</span>
-                          <span style="font-size: 14px; font-weight: 600; color: #ffffff;">${ipo.lot_size} shares (₹${minInvestment.toLocaleString('en-IN')})</span>
+                        <td width="50%" style="padding: 8px 10px;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Lot Size</span>
+                          <span class="email-metric-val" style="font-size: 13px; font-weight: 600; color: #0f172a;">${ipo.lot_size} shares (₹${minInvestment.toLocaleString('en-IN')})</span>
                         </td>
-                        <td width="50%" style="padding: 8px;">
-                          <span style="font-size: 11px; color: #94a3b8; display: block; text-transform: uppercase; font-weight: 600;">Total Subscription</span>
-                          <span style="font-size: 14px; font-weight: 600; color: #f59e0b;">${ipo.subscription || '--'}</span>
+                        <td width="50%" style="padding: 8px 10px;">
+                          <span class="email-metric-label" style="font-size: 11px; color: #64748b; display: block; text-transform: uppercase; font-weight: 600;">Total Subscription</span>
+                          <span style="font-size: 13px; font-weight: 600; color: #d97706;">${ipo.subscription || '--'}</span>
                         </td>
                       </tr>
                     </table>
@@ -386,8 +418,8 @@ async function sendAlertEmailViaSmtp({
 
                 <!-- TIMELINE -->
                 <tr>
-                  <td style="padding: 4px 28px 20px 28px;">
-                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="font-size: 12px; color: #94a3b8;">
+                  <td style="padding: 4px 26px 22px 26px;" class="content-padding">
+                    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="font-size: 12px; color: #64748b;" class="email-timeline">
                       <tr>
                         <td style="padding: 4px 0;"><strong>Bidding Opens:</strong> ${ipo.open_date || 'TBA'}</td>
                         <td style="padding: 4px 0;"><strong>Bidding Closes:</strong> ${ipo.close_date || 'TBA'}</td>
@@ -400,19 +432,10 @@ async function sendAlertEmailViaSmtp({
                   </td>
                 </tr>
 
-                <!-- ACTION BUTTON -->
-                <tr>
-                  <td align="center" style="padding: 12px 28px 30px 28px;">
-                    <a href="https://folioxweb.github.io/foliox/uat/#/ipo/${ipo.id}" target="_blank" style="display: inline-block; padding: 12px 28px; background-color: #0284c7; color: #ffffff; text-decoration: none; border-radius: 10px; font-size: 13px; font-weight: 700; box-shadow: 0 4px 12px rgba(2, 132, 199, 0.4);">
-                      View Full Details on FolioX &rarr;
-                    </a>
-                  </td>
-                </tr>
-
                 <!-- FOOTER -->
                 <tr>
-                  <td style="padding: 18px 28px; background-color: #0f172a; border-top: 1px solid #334155; text-align: center;">
-                    <p style="margin: 0; font-size: 11px; color: #64748b; line-height: 1.5;">
+                  <td style="padding: 16px 26px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;" class="email-footer">
+                    <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;">
                       This real-time notification was dispatched automatically by FolioX IPO Engine based on 20% GMP threshold transitions.<br>
                       &copy; 2026 FolioX Wealth Tracker. All rights reserved.
                     </p>
