@@ -665,26 +665,61 @@ serve(withSystemLogging('execute-trade', async (req) => {
           .eq('asset_id', target_asset_id);
       }
 
-      let delQuery = supabaseClient.from('transactions').delete().eq('asset_id', target_asset_id);
-      if (userId) delQuery = delQuery.eq('user_id', userId);
-      await delQuery;
-
-      const newTxData: Record<string, any> = {
-        asset_id: target_asset_id,
-        tx_type: 'BUY',
-        quantity: targetQty,
-        price: targetPrice,
-        tx_date: new Date().toISOString()
-      };
-      if (userId) newTxData.user_id = userId;
-
-      const { data: txData, error: txErr } = await supabaseClient
+      // 1. Fetch existing transactions for this asset and user
+      let txQuery = supabaseClient
         .from('transactions')
-        .insert(newTxData)
-        .select()
-        .single();
+        .select('tx_id, quantity, price, tx_date')
+        .eq('asset_id', target_asset_id);
+      if (userId) txQuery = txQuery.eq('user_id', userId);
+      const { data: existingTxs } = await txQuery.order('tx_date', { ascending: true });
 
-      if (txErr) throw txErr;
+      let txData: any = null;
+
+      if (existingTxs && existingTxs.length > 0) {
+        // In-place atomic update of primary transaction (preserves tx_id, tx_date & emits 1 audit event)
+        const primaryTxId = existingTxs[0].tx_id;
+        const { data: updatedTx, error: updateErr } = await supabaseClient
+          .from('transactions')
+          .update({
+            quantity: targetQty,
+            price: targetPrice,
+            tx_type: 'BUY'
+          })
+          .eq('tx_id', primaryTxId)
+          .select()
+          .single();
+
+        if (updateErr) throw updateErr;
+        txData = updatedTx;
+
+        // Clean up any extra legacy split rows if they existed
+        const extraIds = existingTxs.slice(1).map((t: any) => t.tx_id);
+        if (extraIds.length > 0) {
+          await supabaseClient
+            .from('transactions')
+            .delete()
+            .in('tx_id', extraIds);
+        }
+      } else {
+        // Fallback insert if no transaction existed for this asset
+        const newTxData: Record<string, any> = {
+          asset_id: target_asset_id,
+          tx_type: 'BUY',
+          quantity: targetQty,
+          price: targetPrice,
+          tx_date: new Date().toISOString()
+        };
+        if (userId) newTxData.user_id = userId;
+
+        const { data: insertedTx, error: insertErr } = await supabaseClient
+          .from('transactions')
+          .insert(newTxData)
+          .select()
+          .single();
+
+        if (insertErr) throw insertErr;
+        txData = insertedTx;
+      }
 
       return new Response(JSON.stringify({ 
         success: true, 
