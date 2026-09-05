@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.32.0'
 import { encode as encodeBase64 } from "https://deno.land/std@0.192.0/encoding/base64.ts"
+import { withSystemLogging } from '../_shared/systemLogger.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -59,7 +60,7 @@ Return ONLY a valid, parseable JSON object matching this exact schema:
 }`;
 }
 
-serve(async (req) => {
+serve(withSystemLogging('generate-ai-summary', async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -271,4 +272,4 @@ serve(async (req) => {
       status: 400
     });
   }
-});
+}));
