@@ -465,6 +465,239 @@ async function sendAlertEmailViaSmtp({
   };
 }
 
+async function sendClosingDayDigestEmailViaSmtp({
+  recipients,
+  closingIpos
+}: {
+  recipients: string[];
+  closingIpos: Array<{
+    ipo: any;
+    currentGmp: number;
+    estProfit: number;
+    expectedListingPrice: number;
+    minInvestment: number;
+  }>;
+}) {
+  if (!recipients || recipients.length === 0 || !closingIpos || closingIpos.length === 0) {
+    return { success: true, subject: '', error: 'No recipients or no closing IPOs' };
+  }
+
+  const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com';
+  const smtpPort = Number(Deno.env.get('SMTP_PORT') || 465);
+  const smtpUser = Deno.env.get('SMTP_USER') || Deno.env.get('GMAIL_USER') || 'foliox.in@gmail.com';
+  const smtpPass = Deno.env.get('SMTP_PASS') || Deno.env.get('GMAIL_APP_PASSWORD');
+
+  if (!smtpPass) {
+    console.warn('Gmail SMTP password not configured. Skipping closing digest dispatch.');
+    return { success: false, subject: '', error: 'SMTP credentials missing' };
+  }
+
+  const isSecure = smtpPort === 465;
+  const transporter = nodemailer.createTransport({
+    host: smtpHost,
+    port: smtpPort,
+    secure: isSecure,
+    auth: {
+      user: smtpUser,
+      pass: smtpPass
+    }
+  });
+
+  const count = closingIpos.length;
+  const subject = count === 1
+    ? `⏰ FolioX Alert: ${closingIpos[0].ipo.ipo_name} Closes Today (${closingIpos[0].currentGmp.toFixed(1)}% GMP)`
+    : `⏰ FolioX Alert: ${count} IPOs Closing Today with >20% GMP`;
+
+  const headline = count === 1
+    ? `${closingIpos[0].ipo.ipo_name} closes today with strong GMP of ${closingIpos[0].currentGmp.toFixed(1)}%`
+    : `${count} IPOs with attractive GMP (>20%) are closing today`;
+
+  const summaryText = `Today is the final day to submit bids before applications close at 5:00 PM IST. Review the Grey Market Premiums below before making your final application decision:`;
+
+  const ipoCardsHtml = closingIpos.map((item, idx) => {
+    const isSme = String(item.ipo.category || '').toUpperCase().includes('SME');
+    const categoryLabel = isSme ? 'SME IPO' : 'Mainboard IPO';
+    const isLast = idx === count - 1;
+
+    return `
+      <!-- IPO CARD #${idx + 1}: ${item.ipo.ipo_name} -->
+      <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; margin-bottom: ${isLast ? '0' : '18px'}; overflow: hidden;" class="email-card">
+        <!-- COMPANY HEADER -->
+        <tr>
+          <td style="padding: 16px 20px 12px 20px; border-bottom: 1px solid #f1f5f9;" class="email-header">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0">
+              <tr>
+                <td>
+                  <h3 class="email-title" style="margin: 0; font-size: 17px; font-weight: 800; color: #0f172a;">${item.ipo.ipo_name}</h3>
+                </td>
+                <td align="right" valign="middle">
+                  <span class="email-badge-pill" style="display: inline-block; padding: 3px 8px; border-radius: 9999px; font-size: 10px; font-weight: 700; background-color: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;">${categoryLabel}</span>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- HERO GMP HIGHLIGHT (MOST IMPORTANT DETAIL) -->
+        <tr>
+          <td style="padding: 14px 20px 10px 20px;">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #ecfdf5; border-radius: 10px; border: 1px solid #a7f3d0; padding: 12px 14px;" class="email-gmp-hero">
+              <tr>
+                <td width="55%">
+                  <span style="font-size: 10px; font-weight: 800; letter-spacing: 0.8px; color: #047857; text-transform: uppercase; display: block;">CURRENT GMP (KEY METRIC)</span>
+                  <span style="font-size: 22px; font-weight: 900; color: #059669; line-height: 1.2;">₹${item.ipo.gmp_amount} (${item.currentGmp.toFixed(1)}%)</span>
+                </td>
+                <td width="45%" align="right">
+                  <span style="font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: #047857; text-transform: uppercase; display: block;">EST. PROFIT (1 LOT)</span>
+                  <span style="font-size: 17px; font-weight: 800; color: #059669; line-height: 1.2;">+₹${item.estProfit.toLocaleString('en-IN')}</span>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <!-- SECONDARY DETAILS GRID -->
+        <tr>
+          <td style="padding: 4px 20px 16px 20px;">
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" style="font-size: 12px; color: #64748b; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; padding: 10px 12px;" class="email-metric-card">
+              <tr>
+                <td width="50%" style="padding: 4px 6px;">
+                  <span class="email-metric-label" style="display: block; font-size: 10px; text-transform: uppercase; font-weight: 600; color: #64748b;">Issue Price</span>
+                  <span class="email-metric-val" style="font-size: 13px; font-weight: 700; color: #0f172a;">₹${item.ipo.price_str || item.ipo.price_num || '--'}</span>
+                </td>
+                <td width="50%" style="padding: 4px 6px;">
+                  <span class="email-metric-label" style="display: block; font-size: 10px; text-transform: uppercase; font-weight: 600; color: #64748b;">Est. Listing Price</span>
+                  <span style="font-size: 13px; font-weight: 700; color: #0284c7;">₹${item.expectedListingPrice}</span>
+                </td>
+              </tr>
+              <tr>
+                <td width="50%" style="padding: 4px 6px;">
+                  <span class="email-metric-label" style="display: block; font-size: 10px; text-transform: uppercase; font-weight: 600; color: #64748b;">Lot Size</span>
+                  <span class="email-metric-val" style="font-size: 12px; font-weight: 600; color: #0f172a;">${item.ipo.lot_size} shares (₹${item.minInvestment.toLocaleString('en-IN')})</span>
+                </td>
+                <td width="50%" style="padding: 4px 6px;">
+                  <span class="email-metric-label" style="display: block; font-size: 10px; text-transform: uppercase; font-weight: 600; color: #64748b;">Total Subscription</span>
+                  <span style="font-size: 12px; font-weight: 700; color: #d97706;">${item.ipo.subscription || '--'}</span>
+                </td>
+              </tr>
+              <tr>
+                <td colspan="2" style="padding: 6px 6px 2px 6px; border-top: 1px solid #e2e8f0; margin-top: 4px; font-size: 11px; color: #64748b;" class="email-timeline">
+                  <strong>Bidding Closes:</strong> Today (5:00 PM IST) &bull; <strong>Allotment:</strong> ${item.ipo.boa_date || 'TBA'} &bull; <strong>Listing:</strong> ${item.ipo.listing_date || 'TBA'}
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    `;
+  }).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="color-scheme" content="light dark">
+        <meta name="supported-color-schemes" content="light dark">
+        <title>${subject}</title>
+        <style>
+          :root {
+            color-scheme: light dark;
+            supported-color-schemes: light dark;
+          }
+          @media only screen and (max-width: 600px) {
+            .email-card { width: 100% !important; border-radius: 10px !important; }
+            .content-padding { padding: 18px 16px !important; }
+          }
+          @media (prefers-color-scheme: dark) {
+            body, .email-bg { background-color: #0b0f19 !important; }
+            .email-card { background-color: #151d2f !important; border-color: #243247 !important; }
+            .email-header { background-color: #151d2f !important; border-color: #243247 !important; }
+            .email-title { color: #f8fafc !important; }
+            .email-badge-pill { background-color: #1e293b !important; border-color: #334155 !important; color: #94a3b8 !important; }
+            .email-headline { color: #f8fafc !important; }
+            .email-desc { color: #cbd5e1 !important; }
+            .email-gmp-hero { background-color: #064e3b !important; border-color: #059669 !important; }
+            .email-metric-card { background-color: #0f172a !important; border-color: #243247 !important; }
+            .email-metric-label { color: #94a3b8 !important; }
+            .email-metric-val { color: #f8fafc !important; }
+            .email-timeline { color: #94a3b8 !important; border-color: #243247 !important; }
+            .email-timeline strong { color: #e2e8f0 !important; }
+            .email-footer { background-color: #0f172a !important; border-color: #243247 !important; color: #64748b !important; }
+          }
+        </style>
+      </head>
+      <body class="email-bg" style="margin: 0; padding: 0; background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #0f172a;">
+        <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f1f5f9; padding: 24px 10px;" class="email-bg">
+          <tr>
+            <td align="center">
+              <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; background-color: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);" class="email-card">
+                
+                <!-- TOP COLOR ACCENT BAR (AMBER/ORANGE FOR CLOSING DAY URGENCY) -->
+                <tr>
+                  <td style="height: 4px; background-color: #d97706; font-size: 0; line-height: 0;">&nbsp;</td>
+                </tr>
+
+                <!-- MAIN DIGEST HEADER -->
+                <tr>
+                  <td style="padding: 22px 26px 14px 26px; background-color: #ffffff; border-bottom: 1px solid #f1f5f9;" class="email-header">
+                    <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #d97706; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
+                    <h1 class="email-title" style="margin: 4px 0 0 0; font-size: 22px; font-weight: 800; color: #0f172a;">Closing Day Digest</h1>
+                  </td>
+                </tr>
+
+                <!-- BADGE & HEADLINE -->
+                <tr>
+                  <td style="padding: 20px 26px 16px 26px;" class="content-padding">
+                    <div style="display: inline-block; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: #d97706; margin-bottom: 12px;">
+                      FINAL BIDDING DAY — CLOSING TODAY (5:00 PM)
+                    </div>
+                    <h2 class="email-headline" style="margin: 0 0 8px 0; font-size: 17px; font-weight: 700; color: #0f172a;">${headline}</h2>
+                    <p class="email-desc" style="margin: 0; font-size: 14px; line-height: 1.6; color: #475569;">${summaryText}</p>
+                  </td>
+                </tr>
+
+                <!-- BULK LIST OF CLOSING IPOS -->
+                <tr>
+                  <td style="padding: 4px 26px 20px 26px;" class="content-padding">
+                    ${ipoCardsHtml}
+                  </td>
+                </tr>
+
+                <!-- FOOTER -->
+                <tr>
+                  <td style="padding: 16px 26px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;" class="email-footer">
+                    <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;">
+                      This morning closing digest was dispatched automatically by FolioX IPO Engine for active IPOs with &gt;20% GMP closing today.<br>
+                      &copy; 2026 FolioX Wealth Tracker. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  `;
+
+  const info = await transporter.sendMail({
+    from: `"FolioX IPO Alerts" <${smtpUser}>`,
+    to: smtpUser,
+    bcc: recipients.length > 0 ? recipients : undefined,
+    subject,
+    html
+  });
+
+  return {
+    success: true,
+    subject,
+    messageId: info.messageId
+  };
+}
+
 async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[]) {
   if (!formattedRecords || formattedRecords.length === 0) return;
 
@@ -696,6 +929,114 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
     }
   }
 
+  // ── Closing Day Morning Bulk Alert (08:00 AM - 11:59 AM IST) ──
+  // NOTE: Closing day strictly refers to bidding close date (item.sort_close), NOT listing date.
+  const istHour = istDate.getHours();
+  const isMorningWindow = istHour >= 8 && istHour < 12;
+
+  if (isMorningWindow) {
+    let closingDigestSentToday = false;
+    try {
+      const { data: sentToday } = await supabaseAdmin
+        .from('ipo_email_alerts')
+        .select('id')
+        .eq('alert_type', 'CLOSING_DAY_DIGEST')
+        .gte('created_at', `${todayStr}T00:00:00Z`)
+        .limit(1);
+
+      if (sentToday && sentToday.length > 0) {
+        closingDigestSentToday = true;
+      }
+    } catch (chkErr: any) {
+      console.warn('Warning: Could not check today closing digest:', chkErr.message);
+    }
+
+    if (!closingDigestSentToday) {
+      const closingEligible = formattedRecords
+        .filter(item => {
+          const closeDate = item.sort_close;
+          const listingDate = item.sort_listing;
+          // Exclude already listed IPOs or listing today
+          const isListed = String(item.status || '').toLowerCase().includes('listed') || Boolean(listingDate && todayStr >= listingDate);
+          const gmpPercent = Number(item.gmp_percent || 0);
+          // STRICT: Targets bidding close date (sort_close) only.
+          return closeDate && todayStr === closeDate && !isListed && gmpPercent >= 20;
+        })
+        .map(item => {
+          const currentGmp = Number(item.gmp_percent || 0);
+          const gmpAmount = Number(item.gmp_amount || 0);
+          const lotSize = Number(item.lot_size || 1);
+          const priceNum = Number(item.price_num || 0);
+          return {
+            ipo: item,
+            currentGmp,
+            estProfit: gmpAmount * lotSize,
+            expectedListingPrice: priceNum + gmpAmount,
+            minInvestment: priceNum * lotSize
+          };
+        })
+        .sort((a, b) => b.currentGmp - a.currentGmp);
+
+      if (closingEligible.length > 0) {
+        if (recipients.length === 0) {
+          console.log(`[Alert] CLOSING_DAY_DIGEST detected for ${closingEligible.length} IPOs, but no users enabled alerts.`);
+          alertLogs.push({
+            ipo_id: closingEligible[0].ipo.id,
+            ipo_name: closingEligible.map(c => c.ipo.ipo_name).join(', '),
+            category: closingEligible.length > 1 ? 'MULTI' : closingEligible[0].ipo.category || 'IPO',
+            alert_type: 'CLOSING_DAY_DIGEST',
+            gmp_percent: closingEligible[0].currentGmp,
+            previous_gmp_percent: null,
+            recipients: [],
+            recipient_count: 0,
+            subject: `FolioX Alert: ${closingEligible.length} IPOs Closing Today with >20% GMP`,
+            sent_status: 'SKIPPED_NO_RECIPIENTS',
+            error_message: 'No users have enabled IPO email alerts',
+            created_at: new Date().toISOString()
+          });
+        } else {
+          try {
+            const emailResult = await sendClosingDayDigestEmailViaSmtp({
+              recipients,
+              closingIpos: closingEligible
+            });
+
+            alertLogs.push({
+              ipo_id: closingEligible[0].ipo.id,
+              ipo_name: closingEligible.map(c => c.ipo.ipo_name).join(', '),
+              category: closingEligible.length > 1 ? 'MULTI' : closingEligible[0].ipo.category || 'IPO',
+              alert_type: 'CLOSING_DAY_DIGEST',
+              gmp_percent: closingEligible[0].currentGmp,
+              previous_gmp_percent: null,
+              recipients,
+              recipient_count: recipients.length,
+              subject: emailResult.subject,
+              sent_status: emailResult.success ? 'SENT' : 'FAILED',
+              error_message: emailResult.error || null,
+              created_at: new Date().toISOString()
+            });
+          } catch (err: any) {
+            console.error('Error sending closing day digest email:', err);
+            alertLogs.push({
+              ipo_id: closingEligible[0].ipo.id,
+              ipo_name: closingEligible.map(c => c.ipo.ipo_name).join(', '),
+              category: closingEligible.length > 1 ? 'MULTI' : closingEligible[0].ipo.category || 'IPO',
+              alert_type: 'CLOSING_DAY_DIGEST',
+              gmp_percent: closingEligible[0].currentGmp,
+              previous_gmp_percent: null,
+              recipients,
+              recipient_count: recipients.length,
+              subject: `FolioX Alert: ${closingEligible.length} IPOs Closing Today with >20% GMP`,
+              sent_status: 'FAILED',
+              error_message: err.message,
+              created_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+    }
+  }
+
   if (alertLogs.length > 0) {
     try {
       await supabaseAdmin.from('ipo_email_alerts').insert(alertLogs);
@@ -730,6 +1071,104 @@ serve(async (req) => {
     const testMode = url.searchParams.get('test') || url.searchParams.get('test_type');
     if (testMode) {
       const recipients = await getAlertRecipients(supabaseAdmin);
+
+      if (testMode === 'closing') {
+        const sampleClosingIpos = [
+          {
+            ipo: {
+              id: 1662,
+              ipo_name: 'Pranav Constructions',
+              category: 'IPO',
+              price_str: '124',
+              price_num: 124,
+              gmp_amount: 39,
+              gmp_percent: 31.45,
+              lot_size: 100,
+              subscription: '18.5x',
+              close_date: 'Today (5:00 PM)',
+              boa_date: '10-Sep',
+              listing_date: '12-Sep'
+            },
+            currentGmp: 31.45,
+            estProfit: 3900,
+            expectedListingPrice: 163,
+            minInvestment: 12400
+          },
+          {
+            ipo: {
+              id: 1950,
+              ipo_name: 'Shubhashish Homes',
+              category: 'IPO',
+              price_str: '210',
+              price_num: 210,
+              gmp_amount: 52,
+              gmp_percent: 24.76,
+              lot_size: 70,
+              subscription: '8.2x',
+              close_date: 'Today (5:00 PM)',
+              boa_date: '11-Sep',
+              listing_date: '15-Sep'
+            },
+            currentGmp: 24.76,
+            estProfit: 3640,
+            expectedListingPrice: 262,
+            minInvestment: 14700
+          },
+          {
+            ipo: {
+              id: 1820,
+              ipo_name: 'Shree Tirupati Balajee',
+              category: 'IPO',
+              price_str: '99',
+              price_num: 99,
+              gmp_amount: 21,
+              gmp_percent: 21.21,
+              lot_size: 150,
+              subscription: '12.4x',
+              close_date: 'Today (5:00 PM)',
+              boa_date: '10-Sep',
+              listing_date: '12-Sep'
+            },
+            currentGmp: 21.21,
+            estProfit: 3150,
+            expectedListingPrice: 120,
+            minInvestment: 14850
+          }
+        ];
+
+        const emailResult = await sendClosingDayDigestEmailViaSmtp({
+          recipients,
+          closingIpos: sampleClosingIpos
+        });
+
+        await supabaseAdmin.from('ipo_email_alerts').insert([{
+          ipo_id: sampleClosingIpos[0].ipo.id,
+          ipo_name: sampleClosingIpos.map(c => c.ipo.ipo_name).join(', '),
+          category: 'MULTI',
+          alert_type: 'CLOSING_DAY_DIGEST',
+          gmp_percent: sampleClosingIpos[0].currentGmp,
+          previous_gmp_percent: null,
+          recipients,
+          recipient_count: recipients.length,
+          subject: emailResult.subject || 'FolioX Alert: Closing Day Digest',
+          sent_status: emailResult.success ? 'SENT' : 'FAILED',
+          error_message: emailResult.error || null,
+          created_at: new Date().toISOString()
+        }]);
+
+        return new Response(JSON.stringify({
+          success: emailResult.success,
+          mode: 'TEST_DISPATCH',
+          alert_type: 'CLOSING_DAY_DIGEST',
+          recipients,
+          closing_ipos_count: sampleClosingIpos.length,
+          closing_ipos: sampleClosingIpos.map(c => ({ name: c.ipo.ipo_name, gmp: c.currentGmp })),
+          emailResult
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: emailResult.success ? 200 : 500
+        });
+      }
 
       const allTestConfigs = [
         {
