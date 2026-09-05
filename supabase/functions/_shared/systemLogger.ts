@@ -137,6 +137,7 @@ export function withSystemLogging(
     let requestPayload: any = null;
     let userId: string | null = null;
     let userEmail: string | null = null;
+    let callerType: 'CRON' | 'USER' | 'ANON' | 'SYSTEM' = 'CRON';
     const userAgent = req.headers.get('user-agent') || '';
     const isPgNet = userAgent.toLowerCase().includes('pg_net') || userAgent.toLowerCase().includes('postgresql');
 
