@@ -730,54 +730,119 @@ serve(async (req) => {
     const testMode = url.searchParams.get('test') || url.searchParams.get('test_type');
     if (testMode) {
       const recipients = await getAlertRecipients(supabaseAdmin);
-      const alertType = testMode === 'drop'
-        ? 'GMP_DROPPED_BELOW_20'
-        : testMode === 'surge'
-        ? 'GMP_RISEN_ABOVE_20'
-        : 'OPENING_DAY_HIGH_GMP';
 
-      const sampleIpo = {
-        id: 1662,
-        ipo_name: 'Pranav Constructions',
-        category: 'IPO',
-        price_num: 124,
-        gmp_amount: 39,
-        gmp_percent: 31.45,
-        lot_size: 100
-      };
+      const allTestConfigs = [
+        {
+          alertType: 'OPENING_DAY_HIGH_GMP' as const,
+          ipo: {
+            id: 1662,
+            ipo_name: 'Pranav Constructions',
+            category: 'IPO',
+            price_num: 124,
+            gmp_amount: 39,
+            gmp_percent: 31.45,
+            lot_size: 100,
+            open_date: '5-Sep',
+            close_date: '9-Sep',
+            boa_date: '10-Sep',
+            listing_date: '12-Sep',
+            subscription: '18.5x'
+          },
+          prevGmp: 24.0,
+          currentGmp: 31.45
+        },
+        {
+          alertType: 'GMP_DROPPED_BELOW_20' as const,
+          ipo: {
+            id: 2081,
+            ipo_name: 'Deepa Jewellers',
+            category: 'IPO',
+            price_num: 177,
+            gmp_amount: 19,
+            gmp_percent: 10.73,
+            lot_size: 84,
+            open_date: '1-Sep',
+            close_date: '3-Sep',
+            boa_date: '4-Sep',
+            listing_date: '8-Sep',
+            subscription: '43.4x'
+          },
+          prevGmp: 25.0,
+          currentGmp: 10.73
+        },
+        {
+          alertType: 'GMP_RISEN_ABOVE_20' as const,
+          ipo: {
+            id: 1950,
+            ipo_name: 'Shubhashish Homes',
+            category: 'IPO',
+            price_num: 210,
+            gmp_amount: 52,
+            gmp_percent: 24.76,
+            lot_size: 70,
+            open_date: '8-Sep',
+            close_date: '10-Sep',
+            boa_date: '11-Sep',
+            listing_date: '15-Sep',
+            subscription: '8.2x'
+          },
+          prevGmp: 14.5,
+          currentGmp: 24.76
+        }
+      ];
 
-      const emailResult = await sendAlertEmailViaSmtp({
-        recipients,
-        ipo: sampleIpo,
-        alertType: alertType as any,
-        prevGmp: alertType === 'GMP_DROPPED_BELOW_20' ? 28.5 : 12.0,
-        currentGmp: alertType === 'GMP_DROPPED_BELOW_20' ? 14.5 : 31.45
-      });
+      const testsToRun = testMode === 'all'
+        ? allTestConfigs
+        : allTestConfigs.filter(t => {
+            if (testMode === 'drop') return t.alertType === 'GMP_DROPPED_BELOW_20';
+            if (testMode === 'surge') return t.alertType === 'GMP_RISEN_ABOVE_20';
+            return t.alertType === 'OPENING_DAY_HIGH_GMP';
+          });
 
-      await supabaseAdmin.from('ipo_email_alerts').insert([{
-        ipo_id: sampleIpo.id,
-        ipo_name: sampleIpo.ipo_name,
-        category: sampleIpo.category,
-        alert_type: alertType,
-        gmp_percent: alertType === 'GMP_DROPPED_BELOW_20' ? 14.5 : 31.45,
-        previous_gmp_percent: alertType === 'GMP_DROPPED_BELOW_20' ? 28.5 : 12.0,
-        recipients,
-        recipient_count: recipients.length,
-        subject: emailResult.subject || `FolioX Test Alert: ${sampleIpo.ipo_name}`,
-        sent_status: emailResult.success ? 'SENT' : 'FAILED',
-        error_message: emailResult.error || null,
-        created_at: new Date().toISOString()
-      }]);
+      const dispatchResults = [];
+
+      for (const item of testsToRun) {
+        const emailResult = await sendAlertEmailViaSmtp({
+          recipients,
+          ipo: item.ipo,
+          alertType: item.alertType,
+          prevGmp: item.prevGmp,
+          currentGmp: item.currentGmp
+        });
+
+        await supabaseAdmin.from('ipo_email_alerts').insert([{
+          ipo_id: item.ipo.id,
+          ipo_name: item.ipo.ipo_name,
+          category: item.ipo.category,
+          alert_type: item.alertType,
+          gmp_percent: item.currentGmp,
+          previous_gmp_percent: item.prevGmp,
+          recipients,
+          recipient_count: recipients.length,
+          subject: emailResult.subject || `FolioX Test Alert: ${item.ipo.ipo_name}`,
+          sent_status: emailResult.success ? 'SENT' : 'FAILED',
+          error_message: emailResult.error || null,
+          created_at: new Date().toISOString()
+        }]);
+
+        dispatchResults.push({
+          alertType: item.alertType,
+          ipo: item.ipo.ipo_name,
+          success: emailResult.success,
+          subject: emailResult.subject,
+          messageId: emailResult.messageId
+        });
+      }
 
       return new Response(JSON.stringify({
-        success: emailResult.success,
+        success: dispatchResults.every(r => r.success),
         mode: 'TEST_DISPATCH',
-        alert_type: alertType,
         recipients,
-        emailResult
+        count: dispatchResults.length,
+        dispatches: dispatchResults
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: emailResult.success ? 200 : 500
+        status: 200
       });
     }
 
