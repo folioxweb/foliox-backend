@@ -252,7 +252,7 @@ async function sendAlertEmailViaSmtp({
 
   const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com';
   const smtpPort = Number(Deno.env.get('SMTP_PORT') || 465);
-  const smtpUser = Deno.env.get('SMTP_USER') || Deno.env.get('GMAIL_USER') || 'deshmukhparth14@gmail.com';
+  const smtpUser = Deno.env.get('SMTP_USER') || Deno.env.get('GMAIL_USER') || 'foliox.in@gmail.com';
   const smtpPass = Deno.env.get('SMTP_PASS') || Deno.env.get('GMAIL_APP_PASSWORD');
 
   if (!smtpPass) {
