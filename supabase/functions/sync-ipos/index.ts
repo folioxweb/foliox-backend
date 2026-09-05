@@ -211,7 +211,10 @@ async function getAlertRecipients(supabaseAdmin: any): Promise<string[]> {
     const { data, error } = await supabaseAdmin.auth.admin.listUsers();
     if (!error && data?.users) {
       for (const u of data.users) {
-        if (u.email && u.email_confirmed_at) {
+        // Opt-in: Default is OFF. Alert only if user explicitly enabled IPO alerts
+        const isAlertsEnabled = u.user_metadata?.ipo_alerts_enabled === true;
+
+        if (u.email && u.email_confirmed_at && isAlertsEnabled) {
           recipients.add(u.email.trim().toLowerCase());
         }
       }
@@ -225,10 +228,6 @@ async function getAlertRecipients(supabaseAdmin: any): Promise<string[]> {
     for (const email of fallbackEnv.split(',')) {
       if (email.trim()) recipients.add(email.trim().toLowerCase());
     }
-  }
-
-  if (recipients.size === 0) {
-    recipients.add('deshmukhparth14@gmail.com');
   }
 
   return Array.from(recipients);
@@ -247,6 +246,10 @@ async function sendAlertEmailViaSmtp({
   prevGmp: number;
   currentGmp: number;
 }) {
+  if (!recipients || recipients.length === 0) {
+    return { success: true, subject: '', error: 'No recipients enabled' };
+  }
+
   const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com';
   const smtpPort = Number(Deno.env.get('SMTP_PORT') || 465);
   const smtpUser = Deno.env.get('SMTP_USER') || Deno.env.get('GMAIL_USER') || 'deshmukhparth14@gmail.com';
@@ -609,6 +612,25 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
   }
 
   for (const alertItem of emailsToSend) {
+    if (recipients.length === 0) {
+      console.log(`[Alert] ${alertItem.alertType} for ${alertItem.ipo.ipo_name} detected, but no users have enabled IPO email alerts. Skipping dispatch.`);
+      alertLogs.push({
+        ipo_id: alertItem.ipo.id,
+        ipo_name: alertItem.ipo.ipo_name,
+        category: alertItem.ipo.category || 'IPO',
+        alert_type: alertItem.alertType,
+        gmp_percent: alertItem.currentGmp,
+        previous_gmp_percent: alertItem.prevGmp,
+        recipients: [],
+        recipient_count: 0,
+        subject: `FolioX IPO Alert: ${alertItem.ipo.ipo_name}`,
+        sent_status: 'SKIPPED_NO_RECIPIENTS',
+        error_message: 'No users have enabled IPO email alerts',
+        created_at: new Date().toISOString()
+      });
+      continue;
+    }
+
     try {
       const emailResult = await sendAlertEmailViaSmtp({
         recipients,
