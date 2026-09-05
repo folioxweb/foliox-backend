@@ -142,21 +142,31 @@ serve(withSystemLogging('execute-trade', async (req) => {
         added_at: new Date().toISOString()
       };
 
+      let resData: any = null;
+      let resError: any = null;
+
       if (userId) {
         watchItemData.user_id = userId;
+        const { data, error } = await supabaseClient
+          .from('watchlist_items')
+          .upsert(watchItemData, { onConflict: 'user_id,symbol' })
+          .select()
+          .single();
+        resData = data;
+        resError = error;
+      } else {
+        const { data, error } = await supabaseClient
+          .from('watchlist_items')
+          .insert(watchItemData)
+          .select()
+          .single();
+        resData = data;
+        resError = error;
       }
 
-      const onConflictTarget = userId ? 'user_id,symbol' : 'symbol';
+      if (resError) throw resError;
 
-      const { data, error } = await supabaseClient
-        .from('watchlist_items')
-        .upsert(watchItemData, { onConflict: onConflictTarget })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      return new Response(JSON.stringify({ success: true, item: data }), {
+      return new Response(JSON.stringify({ success: true, item: resData }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       });
