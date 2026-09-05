@@ -465,12 +465,14 @@ async function sendAlertEmailViaSmtp({
   };
 }
 
-async function sendClosingDayDigestEmailViaSmtp({
+async function sendBulkDigestEmailViaSmtp({
   recipients,
-  closingIpos
+  digestType,
+  ipos
 }: {
   recipients: string[];
-  closingIpos: Array<{
+  digestType: 'OPENING' | 'CLOSING';
+  ipos: Array<{
     ipo: any;
     currentGmp: number;
     estProfit: number;
@@ -478,8 +480,8 @@ async function sendClosingDayDigestEmailViaSmtp({
     minInvestment: number;
   }>;
 }) {
-  if (!recipients || recipients.length === 0 || !closingIpos || closingIpos.length === 0) {
-    return { success: true, subject: '', error: 'No recipients or no closing IPOs' };
+  if (!recipients || recipients.length === 0 || !ipos || ipos.length === 0) {
+    return { success: true, subject: '', error: 'No recipients or no IPOs' };
   }
 
   const smtpHost = Deno.env.get('SMTP_HOST') || 'smtp.gmail.com';
@@ -488,7 +490,7 @@ async function sendClosingDayDigestEmailViaSmtp({
   const smtpPass = Deno.env.get('SMTP_PASS') || Deno.env.get('GMAIL_APP_PASSWORD');
 
   if (!smtpPass) {
-    console.warn('Gmail SMTP password not configured. Skipping closing digest dispatch.');
+    console.warn(`Gmail SMTP password not configured. Skipping ${digestType} digest dispatch.`);
     return { success: false, subject: '', error: 'SMTP credentials missing' };
   }
 
@@ -503,21 +505,39 @@ async function sendClosingDayDigestEmailViaSmtp({
     }
   });
 
-  const count = closingIpos.length;
+  const count = ipos.length;
+  const isOpening = digestType === 'OPENING';
+
+  const themeColor = isOpening ? '#059669' : '#d97706';
+  const emoji = isOpening ? '🟢' : '⏰';
+  const verb = isOpening ? 'Opening' : 'Closing';
+  const verbPresent = isOpening ? 'Opens' : 'Closes';
+
   const subject = count === 1
-    ? `⏰ FolioX Alert: ${closingIpos[0].ipo.ipo_name} Closes Today (${closingIpos[0].currentGmp.toFixed(1)}% GMP)`
-    : `⏰ FolioX Alert: ${count} IPOs Closing Today with >20% GMP`;
+    ? `${emoji} FolioX Alert: ${ipos[0].ipo.ipo_name} ${verbPresent} Today (${ipos[0].currentGmp.toFixed(1)}% GMP)`
+    : `${emoji} FolioX Alert: ${count} IPOs ${verb} Today with >20% GMP`;
+
+  const digestTitle = isOpening ? 'Opening Day Digest' : 'Closing Day Digest';
+  const badgeText = isOpening
+    ? 'BIDDING OPENS TODAY (10:00 AM)'
+    : 'FINAL BIDDING DAY — CLOSING TODAY (5:00 PM)';
 
   const headline = count === 1
-    ? `${closingIpos[0].ipo.ipo_name} closes today with strong GMP of ${closingIpos[0].currentGmp.toFixed(1)}%`
-    : `${count} IPOs with attractive GMP (>20%) are closing today`;
+    ? `${ipos[0].ipo.ipo_name} ${verbPresent.toLowerCase()} today with strong GMP of ${ipos[0].currentGmp.toFixed(1)}%`
+    : `${count} IPOs with attractive GMP (>20%) are ${verb.toLowerCase()} today`;
 
-  const summaryText = `Today is the final day to submit bids before applications close at 5:00 PM IST. Review the Grey Market Premiums below before making your final application decision:`;
+  const summaryText = isOpening
+    ? `Bidding opens today at 10:00 AM IST. Review the Grey Market Premiums below before submitting your applications:`
+    : `Today is the final day to submit bids before applications close at 5:00 PM IST. Review the Grey Market Premiums below before making your final application decision:`;
 
-  const ipoCardsHtml = closingIpos.map((item, idx) => {
+  const ipoCardsHtml = ipos.map((item, idx) => {
     const isSme = String(item.ipo.category || '').toUpperCase().includes('SME');
     const categoryLabel = isSme ? 'SME IPO' : 'Mainboard IPO';
     const isLast = idx === count - 1;
+
+    const timelineText = isOpening
+      ? `<strong>Bidding:</strong> Today to ${item.ipo.close_date || 'TBA'} &bull; <strong>Allotment:</strong> ${item.ipo.boa_date || 'TBA'} &bull; <strong>Listing:</strong> ${item.ipo.listing_date || 'TBA'}`
+      : `<strong>Bidding Closes:</strong> Today (5:00 PM IST) &bull; <strong>Allotment:</strong> ${item.ipo.boa_date || 'TBA'} &bull; <strong>Listing:</strong> ${item.ipo.listing_date || 'TBA'}`;
 
     return `
       <!-- IPO CARD #${idx + 1}: ${item.ipo.ipo_name} -->
@@ -582,7 +602,7 @@ async function sendClosingDayDigestEmailViaSmtp({
               </tr>
               <tr>
                 <td colspan="2" style="padding: 6px 6px 2px 6px; border-top: 1px solid #e2e8f0; margin-top: 4px; font-size: 11px; color: #64748b;" class="email-timeline">
-                  <strong>Bidding Closes:</strong> Today (5:00 PM IST) &bull; <strong>Allotment:</strong> ${item.ipo.boa_date || 'TBA'} &bull; <strong>Listing:</strong> ${item.ipo.listing_date || 'TBA'}
+                  ${timelineText}
                 </td>
               </tr>
             </table>
@@ -634,31 +654,31 @@ async function sendClosingDayDigestEmailViaSmtp({
             <td align="center">
               <table width="100%" border="0" cellspacing="0" cellpadding="0" style="max-width: 580px; background-color: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);" class="email-card">
                 
-                <!-- TOP COLOR ACCENT BAR (AMBER/ORANGE FOR CLOSING DAY URGENCY) -->
+                <!-- TOP COLOR ACCENT BAR -->
                 <tr>
-                  <td style="height: 4px; background-color: #d97706; font-size: 0; line-height: 0;">&nbsp;</td>
+                  <td style="height: 4px; background-color: ${themeColor}; font-size: 0; line-height: 0;">&nbsp;</td>
                 </tr>
 
                 <!-- MAIN DIGEST HEADER -->
                 <tr>
                   <td style="padding: 22px 26px 14px 26px; background-color: #ffffff; border-bottom: 1px solid #f1f5f9;" class="email-header">
-                    <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: #d97706; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
-                    <h1 class="email-title" style="margin: 4px 0 0 0; font-size: 22px; font-weight: 800; color: #0f172a;">Closing Day Digest</h1>
+                    <span style="font-size: 11px; font-weight: 800; letter-spacing: 1.5px; color: ${themeColor}; text-transform: uppercase;">FOLIOX IPO INTELLIGENCE</span>
+                    <h1 class="email-title" style="margin: 4px 0 0 0; font-size: 22px; font-weight: 800; color: #0f172a;">${digestTitle}</h1>
                   </td>
                 </tr>
 
                 <!-- BADGE & HEADLINE -->
                 <tr>
                   <td style="padding: 20px 26px 16px 26px;" class="content-padding">
-                    <div style="display: inline-block; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: #d97706; margin-bottom: 12px;">
-                      FINAL BIDDING DAY — CLOSING TODAY (5:00 PM)
+                    <div style="display: inline-block; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: 800; letter-spacing: 0.5px; color: #ffffff; background-color: ${themeColor}; margin-bottom: 12px;">
+                      ${badgeText}
                     </div>
                     <h2 class="email-headline" style="margin: 0 0 8px 0; font-size: 17px; font-weight: 700; color: #0f172a;">${headline}</h2>
                     <p class="email-desc" style="margin: 0; font-size: 14px; line-height: 1.6; color: #475569;">${summaryText}</p>
                   </td>
                 </tr>
 
-                <!-- BULK LIST OF CLOSING IPOS -->
+                <!-- BULK LIST OF IPOS -->
                 <tr>
                   <td style="padding: 4px 26px 20px 26px;" class="content-padding">
                     ${ipoCardsHtml}
@@ -669,7 +689,7 @@ async function sendClosingDayDigestEmailViaSmtp({
                 <tr>
                   <td style="padding: 16px 26px; background-color: #f8fafc; border-top: 1px solid #e2e8f0; text-align: center;" class="email-footer">
                     <p style="margin: 0; font-size: 11px; color: #94a3b8; line-height: 1.5;">
-                      This morning closing digest was dispatched automatically by FolioX IPO Engine for active IPOs with &gt;20% GMP closing today.<br>
+                      This morning ${verb.toLowerCase()} digest was dispatched automatically by FolioX IPO Engine for active IPOs with &gt;20% GMP ${verb.toLowerCase()} today.<br>
                       &copy; 2026 FolioX Wealth Tracker. All rights reserved.
                     </p>
                   </td>
@@ -696,6 +716,40 @@ async function sendClosingDayDigestEmailViaSmtp({
     subject,
     messageId: info.messageId
   };
+}
+
+function sendOpeningDayDigestEmailViaSmtp(params: {
+  recipients: string[];
+  openingIpos: Array<{
+    ipo: any;
+    currentGmp: number;
+    estProfit: number;
+    expectedListingPrice: number;
+    minInvestment: number;
+  }>;
+}) {
+  return sendBulkDigestEmailViaSmtp({
+    recipients: params.recipients,
+    digestType: 'OPENING',
+    ipos: params.openingIpos
+  });
+}
+
+function sendClosingDayDigestEmailViaSmtp(params: {
+  recipients: string[];
+  closingIpos: Array<{
+    ipo: any;
+    currentGmp: number;
+    estProfit: number;
+    expectedListingPrice: number;
+    minInvestment: number;
+  }>;
+}) {
+  return sendBulkDigestEmailViaSmtp({
+    recipients: params.recipients,
+    digestType: 'CLOSING',
+    ipos: params.closingIpos
+  });
 }
 
 async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[]) {
@@ -805,21 +859,18 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
     const isOpeningDay = openDate && todayStr === openDate;
     const isActiveWindow = openDate && todayStr >= openDate && !isListed;
 
-    let triggeredAlertType: 'OPENING_DAY_HIGH_GMP' | 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20' | null = null;
+    let triggeredAlertType: 'GMP_DROPPED_BELOW_20' | 'GMP_RISEN_ABOVE_20' | null = null;
     let prevGmpPercent = state ? Number(state.last_gmp_percent || 0) : 0;
 
     if (!state) {
-      if (isOpeningDay && newBand === 'ABOVE_20') {
-        triggeredAlertType = 'OPENING_DAY_HIGH_GMP';
-      }
       stateUpserts.push({
         ipo_id: item.id,
         ipo_name: item.ipo_name,
         category: item.category || 'IPO',
         last_gmp_percent: currentGmp,
         current_band: newBand,
-        last_alert_type: triggeredAlertType,
-        last_alerted_at: triggeredAlertType ? new Date().toISOString() : null,
+        last_alert_type: null,
+        last_alerted_at: null,
         updated_at: new Date().toISOString()
       });
     } else {
@@ -830,8 +881,6 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
           triggeredAlertType = 'GMP_DROPPED_BELOW_20';
         } else if (prevBand === 'BELOW_20' && newBand === 'ABOVE_20') {
           triggeredAlertType = 'GMP_RISEN_ABOVE_20';
-        } else if (isOpeningDay && newBand === 'ABOVE_20' && state.last_alert_type !== 'OPENING_DAY_HIGH_GMP') {
-          triggeredAlertType = 'OPENING_DAY_HIGH_GMP';
         }
       }
 
@@ -929,12 +978,113 @@ async function logGmpHistoryAndAlerts(supabaseAdmin: any, formattedRecords: any[
     }
   }
 
-  // ── Closing Day Morning Bulk Alert (08:00 AM - 11:59 AM IST) ──
-  // NOTE: Closing day strictly refers to bidding close date (item.sort_close), NOT listing date.
+  // ── Morning Bulk Alerts (08:00 AM - 11:59 AM IST) ──
   const istHour = istDate.getHours();
   const isMorningWindow = istHour >= 8 && istHour < 12;
 
   if (isMorningWindow) {
+    // ── 1. Opening Day Morning Bulk Alert ──
+    let openingDigestSentToday = false;
+    try {
+      const { data: sentOpeningToday } = await supabaseAdmin
+        .from('ipo_email_alerts')
+        .select('id')
+        .eq('alert_type', 'OPENING_DAY_DIGEST')
+        .gte('created_at', `${todayStr}T00:00:00Z`)
+        .limit(1);
+
+      if (sentOpeningToday && sentOpeningToday.length > 0) {
+        openingDigestSentToday = true;
+      }
+    } catch (chkErr: any) {
+      console.warn('Warning: Could not check today opening digest:', chkErr.message);
+    }
+
+    if (!openingDigestSentToday) {
+      const openingEligible = formattedRecords
+        .filter(item => {
+          const openDate = item.sort_open;
+          const listingDate = item.sort_listing;
+          const isListed = String(item.status || '').toLowerCase().includes('listed') || Boolean(listingDate && todayStr >= listingDate);
+          const gmpPercent = Number(item.gmp_percent || 0);
+          return openDate && todayStr === openDate && !isListed && gmpPercent >= 20;
+        })
+        .map(item => {
+          const currentGmp = Number(item.gmp_percent || 0);
+          const gmpAmount = Number(item.gmp_amount || 0);
+          const lotSize = Number(item.lot_size || 1);
+          const priceNum = Number(item.price_num || 0);
+          return {
+            ipo: item,
+            currentGmp,
+            estProfit: gmpAmount * lotSize,
+            expectedListingPrice: priceNum + gmpAmount,
+            minInvestment: priceNum * lotSize
+          };
+        })
+        .sort((a, b) => b.currentGmp - a.currentGmp);
+
+      if (openingEligible.length > 0) {
+        if (recipients.length === 0) {
+          console.log(`[Alert] OPENING_DAY_DIGEST detected for ${openingEligible.length} IPOs, but no users enabled alerts.`);
+          alertLogs.push({
+            ipo_id: openingEligible[0].ipo.id,
+            ipo_name: openingEligible.map(c => c.ipo.ipo_name).join(', '),
+            category: openingEligible.length > 1 ? 'MULTI' : openingEligible[0].ipo.category || 'IPO',
+            alert_type: 'OPENING_DAY_DIGEST',
+            gmp_percent: openingEligible[0].currentGmp,
+            previous_gmp_percent: null,
+            recipients: [],
+            recipient_count: 0,
+            subject: `FolioX Alert: ${openingEligible.length} IPOs Opening Today with >20% GMP`,
+            sent_status: 'SKIPPED_NO_RECIPIENTS',
+            error_message: 'No users have enabled IPO email alerts',
+            created_at: new Date().toISOString()
+          });
+        } else {
+          try {
+            const emailResult = await sendOpeningDayDigestEmailViaSmtp({
+              recipients,
+              openingIpos: openingEligible
+            });
+
+            alertLogs.push({
+              ipo_id: openingEligible[0].ipo.id,
+              ipo_name: openingEligible.map(c => c.ipo.ipo_name).join(', '),
+              category: openingEligible.length > 1 ? 'MULTI' : openingEligible[0].ipo.category || 'IPO',
+              alert_type: 'OPENING_DAY_DIGEST',
+              gmp_percent: openingEligible[0].currentGmp,
+              previous_gmp_percent: null,
+              recipients,
+              recipient_count: recipients.length,
+              subject: emailResult.subject,
+              sent_status: emailResult.success ? 'SENT' : 'FAILED',
+              error_message: emailResult.error || null,
+              created_at: new Date().toISOString()
+            });
+          } catch (err: any) {
+            console.error('Error sending opening day digest email:', err);
+            alertLogs.push({
+              ipo_id: openingEligible[0].ipo.id,
+              ipo_name: openingEligible.map(c => c.ipo.ipo_name).join(', '),
+              category: openingEligible.length > 1 ? 'MULTI' : openingEligible[0].ipo.category || 'IPO',
+              alert_type: 'OPENING_DAY_DIGEST',
+              gmp_percent: openingEligible[0].currentGmp,
+              previous_gmp_percent: null,
+              recipients,
+              recipient_count: recipients.length,
+              subject: `FolioX Alert: ${openingEligible.length} IPOs Opening Today with >20% GMP`,
+              sent_status: 'FAILED',
+              error_message: err.message,
+              created_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+    }
+
+    // ── 2. Closing Day Morning Bulk Alert ──
+    // NOTE: Closing day strictly refers to bidding close date (item.sort_close), NOT listing date.
     let closingDigestSentToday = false;
     try {
       const { data: sentToday } = await supabaseAdmin
@@ -1071,6 +1221,107 @@ serve(async (req) => {
     const testMode = url.searchParams.get('test') || url.searchParams.get('test_type');
     if (testMode) {
       const recipients = await getAlertRecipients(supabaseAdmin);
+
+      if (testMode === 'opening') {
+        const sampleOpeningIpos = [
+          {
+            ipo: {
+              id: 1662,
+              ipo_name: 'Pranav Constructions',
+              category: 'IPO',
+              price_str: '124',
+              price_num: 124,
+              gmp_amount: 39,
+              gmp_percent: 31.45,
+              lot_size: 100,
+              subscription: '18.5x',
+              open_date: 'Today (10:00 AM)',
+              close_date: '9-Sep',
+              boa_date: '10-Sep',
+              listing_date: '12-Sep'
+            },
+            currentGmp: 31.45,
+            estProfit: 3900,
+            expectedListingPrice: 163,
+            minInvestment: 12400
+          },
+          {
+            ipo: {
+              id: 1950,
+              ipo_name: 'Shubhashish Homes',
+              category: 'IPO',
+              price_str: '210',
+              price_num: 210,
+              gmp_amount: 52,
+              gmp_percent: 24.76,
+              lot_size: 70,
+              subscription: '8.2x',
+              open_date: 'Today (10:00 AM)',
+              close_date: '10-Sep',
+              boa_date: '11-Sep',
+              listing_date: '15-Sep'
+            },
+            currentGmp: 24.76,
+            estProfit: 3640,
+            expectedListingPrice: 262,
+            minInvestment: 14700
+          },
+          {
+            ipo: {
+              id: 1820,
+              ipo_name: 'Shree Tirupati Balajee',
+              category: 'IPO',
+              price_str: '99',
+              price_num: 99,
+              gmp_amount: 21,
+              gmp_percent: 21.21,
+              lot_size: 150,
+              subscription: '12.4x',
+              open_date: 'Today (10:00 AM)',
+              close_date: '9-Sep',
+              boa_date: '10-Sep',
+              listing_date: '12-Sep'
+            },
+            currentGmp: 21.21,
+            estProfit: 3150,
+            expectedListingPrice: 120,
+            minInvestment: 14850
+          }
+        ];
+
+        const emailResult = await sendOpeningDayDigestEmailViaSmtp({
+          recipients,
+          openingIpos: sampleOpeningIpos
+        });
+
+        await supabaseAdmin.from('ipo_email_alerts').insert([{
+          ipo_id: sampleOpeningIpos[0].ipo.id,
+          ipo_name: sampleOpeningIpos.map(c => c.ipo.ipo_name).join(', '),
+          category: 'MULTI',
+          alert_type: 'OPENING_DAY_DIGEST',
+          gmp_percent: sampleOpeningIpos[0].currentGmp,
+          previous_gmp_percent: null,
+          recipients,
+          recipient_count: recipients.length,
+          subject: emailResult.subject || 'FolioX Alert: Opening Day Digest',
+          sent_status: emailResult.success ? 'SENT' : 'FAILED',
+          error_message: emailResult.error || null,
+          created_at: new Date().toISOString()
+        }]);
+
+        return new Response(JSON.stringify({
+          success: emailResult.success,
+          mode: 'TEST_DISPATCH',
+          alert_type: 'OPENING_DAY_DIGEST',
+          recipients,
+          opening_ipos_count: sampleOpeningIpos.length,
+          opening_ipos: sampleOpeningIpos.map(c => ({ name: c.ipo.ipo_name, gmp: c.currentGmp })),
+          emailResult
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: emailResult.success ? 200 : 500
+        });
+      }
 
       if (testMode === 'closing') {
         const sampleClosingIpos = [
