@@ -1,8 +1,10 @@
 -- ============================================================================
 -- FOLIOX / EQUITY DASHBOARD - USEFUL SQL QUERIES (SINGLE-LINE FORMAT)
 -- ============================================================================
--- Each query is formatted on a SINGLE LINE for instant copying and pasting
--- directly into the Supabase SQL Editor.
+-- Ready to run directly in Supabase SQL Editor.
+-- Every query is strictly on a SINGLE LINE for instant copying and pasting.
+-- For date queries, the date is left empty as '' (e.g. ::date = '') so you can
+-- simply type your target date (format: 'YYYY-MM-DD').
 -- ============================================================================
 
 
@@ -15,6 +17,12 @@ SELECT id, email, created_at, last_sign_in_at FROM auth.users ORDER BY created_a
 
 -- 1.2 User activity summary (holdings count, watchlist count, virtual paper trades)
 SELECT u.email, COUNT(DISTINCT t.asset_id) AS total_holdings, COUNT(DISTINCT w.symbol) AS watchlist_items, COUNT(DISTINCT pt.id) AS paper_trades FROM auth.users u LEFT JOIN transactions t ON t.user_id = u.id LEFT JOIN watchlist_items w ON w.user_id = u.id LEFT JOIN paper_transactions pt ON pt.user_id = u.id GROUP BY u.id, u.email;
+
+-- 1.3 Users who signed in on a specific date (Enter date 'YYYY-MM-DD')
+SELECT id, email, last_sign_in_at FROM auth.users WHERE last_sign_in_at::date = '' ORDER BY last_sign_in_at DESC;
+
+-- 1.4 Newly registered users on a specific date (Enter date 'YYYY-MM-DD')
+SELECT id, email, created_at FROM auth.users WHERE created_at::date = '' ORDER BY created_at DESC;
 
 
 -- ============================================================================
@@ -47,10 +55,13 @@ SELECT sector, ROUND(allocated_value, 2) AS total_value, ROUND(allocation_pct, 2
 -- 3.1 Latest 20 transactions across the portfolio
 SELECT t.tx_date, a.symbol, a.name, t.tx_type, t.quantity, ROUND(t.price, 2) AS price, ROUND(t.quantity * t.price, 2) AS total_amount, t.user_id FROM transactions t JOIN assets a ON a.asset_id = t.asset_id ORDER BY t.tx_date DESC LIMIT 20;
 
--- 3.2 Transaction history for a specific stock (e.g. 'TCS' or 'RELIANCE')
+-- 3.2 All transactions on a specific date (Enter date 'YYYY-MM-DD')
+SELECT t.tx_date, a.symbol, a.name, t.tx_type, t.quantity, ROUND(t.price, 2) AS price, ROUND(t.quantity * t.price, 2) AS total_amount, u.email FROM transactions t JOIN assets a ON a.asset_id = t.asset_id LEFT JOIN auth.users u ON u.id = t.user_id WHERE t.tx_date::date = '' ORDER BY t.tx_date DESC;
+
+-- 3.3 Transaction history for a specific stock (e.g. 'TCS' or 'RELIANCE')
 SELECT t.tx_date, t.tx_type, t.quantity, ROUND(t.price, 2) AS price, t.tx_id FROM transactions t JOIN assets a ON a.asset_id = t.asset_id WHERE a.symbol = 'TCS' OR a.symbol = 'NSE:TCS' ORDER BY t.tx_date DESC;
 
--- 3.3 Total buy vs sell count and amounts
+-- 3.4 Total buy vs sell count and amounts
 SELECT tx_type, COUNT(*) AS total_trades, SUM(quantity) AS total_shares, ROUND(SUM(quantity * price), 2) AS total_volume FROM transactions GROUP BY tx_type;
 
 
@@ -84,6 +95,9 @@ SELECT symbol, name, ROUND(current_price, 2) AS current_price, ROUND(target_pric
 -- 5.3 Watchlist stocks closest to target price
 SELECT symbol, name, current_price, target_price, ROUND(((target_price - current_price) / current_price) * 100, 2) AS upside_potential_pct FROM vw_watchlist WHERE target_price > current_price ORDER BY upside_potential_pct ASC;
 
+-- 5.4 Watchlist additions on a specific date (Enter date 'YYYY-MM-DD')
+SELECT symbol, name, sector, badge, added_price, added_at FROM watchlist_items WHERE added_at::date = '' ORDER BY added_at DESC;
+
 
 -- ============================================================================
 -- 6. PAPER TRADING (VIRTUAL PORTFOLIO)
@@ -97,6 +111,9 @@ SELECT symbol, name, total_quantity, ROUND(avg_price, 2) AS avg_buy_price, ROUND
 
 -- 6.3 Recent Paper Trades
 SELECT pt.tx_date, pa.symbol, pa.name, pt.tx_type, pt.quantity, ROUND(pt.price, 2) AS trade_price, ROUND(pt.realized_gain, 2) AS realized_gain FROM paper_transactions pt JOIN paper_assets pa ON pa.asset_id = pt.asset_id ORDER BY pt.tx_date DESC LIMIT 20;
+
+-- 6.4 Paper Trades executed on a specific date (Enter date 'YYYY-MM-DD')
+SELECT pt.tx_date, pa.symbol, pa.name, pt.tx_type, pt.quantity, ROUND(pt.price, 2) AS trade_price, ROUND(pt.realized_gain, 2) AS realized_gain, u.email FROM paper_transactions pt JOIN paper_assets pa ON pa.asset_id = pt.asset_id LEFT JOIN auth.users u ON u.id = pt.user_id WHERE pt.tx_date::date = '' ORDER BY pt.tx_date DESC;
 
 
 -- ============================================================================
@@ -115,6 +132,9 @@ SELECT h.recorded_date, h.gmp, m.ipo_name FROM ipo_gmp_history h JOIN mainboard_
 -- 7.4 Log of sent IPO email alerts
 SELECT ipo_name, alert_type, ROUND(gmp_percent, 2) AS gmp_pct, recipient_count, sent_status, error_message, created_at FROM ipo_email_alerts ORDER BY created_at DESC LIMIT 20;
 
+-- 7.5 IPO email alerts sent on a specific date (Enter date 'YYYY-MM-DD')
+SELECT ipo_name, alert_type, recipient_count, sent_status, error_message, created_at FROM ipo_email_alerts WHERE created_at::date = '' ORDER BY created_at DESC;
+
 
 -- ============================================================================
 -- 8. MARKET NEWS & BSE ANNOUNCEMENTS
@@ -123,13 +143,19 @@ SELECT ipo_name, alert_type, ROUND(gmp_percent, 2) AS gmp_pct, recipient_count, 
 -- 8.1 Latest market news
 SELECT title, source, published_at, url FROM news ORDER BY published_at DESC LIMIT 20;
 
--- 8.2 News specifically matching your portfolio assets
+-- 8.2 News ingested on a specific date (Enter date 'YYYY-MM-DD')
+SELECT title, source, published_at, created_at FROM news WHERE created_at::date = '' ORDER BY created_at DESC;
+
+-- 8.3 News specifically matching your portfolio assets
 SELECT symbol, title, source, published_at FROM vw_user_news ORDER BY published_at DESC LIMIT 20;
 
--- 8.3 Recent corporate announcements and filings (BSE)
+-- 8.4 Recent corporate announcements and filings (BSE)
 SELECT company, symbol, title, document_type, ai_status, announcement_date, pdf_url FROM company_documents ORDER BY announcement_date DESC, created_at DESC LIMIT 20;
 
--- 8.4 Announcements with AI research summaries completed
+-- 8.5 BSE announcements ingested on a specific date (Enter date 'YYYY-MM-DD')
+SELECT company, symbol, title, document_type, ai_status, announcement_date, created_at FROM company_documents WHERE created_at::date = '' ORDER BY created_at DESC;
+
+-- 8.6 Announcements with AI research summaries completed
 SELECT company, symbol, title, ai_model, ai_summary_json ->> 'sentiment' AS sentiment, ai_summary_json ->> 'summary' AS executive_summary, created_at FROM company_documents WHERE ai_status = 'COMPLETED' ORDER BY created_at DESC LIMIT 5;
 
 
@@ -145,59 +171,74 @@ SELECT series, COUNT(*) AS total_securities FROM nse_stocks GROUP BY series;
 
 
 -- ============================================================================
--- 10. SYSTEM EXECUTION LOGS (EDGE FUNCTIONS & CRONS)
+-- 10. SYSTEM EXECUTION LOGS (EDGE FUNCTIONS MONITORING)
 -- ============================================================================
 
 -- 10.1 Latest 25 executions across all functions and crons
 SELECT id, function_name, caller_type, response_status, status, duration_ms, user_email, created_at FROM system_execution_logs ORDER BY id DESC LIMIT 25;
 
--- 10.2 Recent errors and failures across functions
-SELECT id, function_name, caller_type, response_status, error_message, request_payload, created_at FROM system_execution_logs WHERE status = 'FAILED' OR response_status >= 400 ORDER BY id DESC LIMIT 15;
+-- 10.2 Executions of a SPECIFIC function on a SPECIFIC date (Enter date 'YYYY-MM-DD' & function name)
+SELECT id, function_name, caller_type, response_status, status, duration_ms, user_email, created_at, error_message FROM system_execution_logs WHERE function_name = 'sync-prices' AND created_at::date = '' ORDER BY id DESC;
 
--- 10.3 Slowest function executions (performance inspection)
+-- 10.3 All Edge Function errors on a specific date (Enter date 'YYYY-MM-DD')
+SELECT id, function_name, caller_type, response_status, error_message, request_payload, created_at FROM system_execution_logs WHERE (status = 'FAILED' OR response_status >= 400) AND created_at::date = '' ORDER BY id DESC;
+
+-- 10.4 Daily function performance & error breakdown for a specific date (Enter date 'YYYY-MM-DD')
+SELECT function_name, COUNT(*) AS total_runs, COUNT(*) FILTER (WHERE status = 'SUCCESS') AS success_runs, COUNT(*) FILTER (WHERE status = 'FAILED' OR response_status >= 400) AS failed_runs, ROUND(AVG(duration_ms)) AS avg_duration_ms, MAX(duration_ms) AS max_duration_ms FROM system_execution_logs WHERE created_at::date = '' GROUP BY function_name ORDER BY total_runs DESC;
+
+-- 10.5 Slowest function executions overall (performance inspection)
 SELECT function_name, caller_type, duration_ms, status, created_at FROM system_execution_logs ORDER BY duration_ms DESC LIMIT 15;
-
--- 10.4 Execution history for a specific function (e.g. 'sync-prices' or 'execute-trade')
-SELECT id, caller_type, status, duration_ms, created_at, response_data FROM system_execution_logs WHERE function_name = 'sync-prices' ORDER BY id DESC LIMIT 10;
-
--- 10.5 Daily summary of function runs and errors
-SELECT function_name, COUNT(*) AS total_runs, COUNT(*) FILTER (WHERE status = 'SUCCESS') AS success_runs, COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_runs, ROUND(AVG(duration_ms)) AS avg_duration_ms FROM system_execution_logs WHERE created_at >= NOW() - INTERVAL '24 hours' GROUP BY function_name ORDER BY total_runs DESC;
 
 
 -- ============================================================================
--- 11. USER AUDIT TRAIL (FINANCIAL & STATE MUTATIONS)
+-- 11. USER AUDIT TRAIL (STATE & FINANCIAL MUTATIONS)
 -- ============================================================================
 
 -- 11.1 Recent user actions across the platform
 SELECT id, action, category, entity_type, entity_id, user_email, created_at FROM user_audit_logs ORDER BY id DESC LIMIT 25;
 
--- 11.2 Audit logs for a specific user
-SELECT id, action, entity_type, old_state, new_state, created_at FROM user_audit_logs WHERE user_email = 'parthdeshmukh291@gmail.com' ORDER BY id DESC LIMIT 20;
+-- 11.2 All user audit logs on a specific date (Enter date 'YYYY-MM-DD')
+SELECT id, action, category, entity_type, entity_id, user_email, created_at, old_state, new_state FROM user_audit_logs WHERE created_at::date = '' ORDER BY id DESC;
 
--- 11.3 Audit logs filtered by category ('PORTFOLIO', 'WATCHLIST', 'PAPER_TRADE')
-SELECT action, entity_id, old_state, new_state, created_at FROM user_audit_logs WHERE category = 'PORTFOLIO' ORDER BY id DESC LIMIT 15;
+-- 11.3 Audit logs for a specific user on a specific date (Enter date 'YYYY-MM-DD')
+SELECT id, action, entity_type, entity_id, old_state, new_state, created_at FROM user_audit_logs WHERE user_email = 'parthdeshmukh291@gmail.com' AND created_at::date = '' ORDER BY id DESC;
+
+-- 11.4 Audit logs filtered by category ('PORTFOLIO', 'WATCHLIST', 'PAPER_TRADE') on a date (Enter date 'YYYY-MM-DD')
+SELECT action, entity_type, entity_id, user_email, created_at, old_state, new_state FROM user_audit_logs WHERE category = 'PORTFOLIO' AND created_at::date = '' ORDER BY id DESC;
 
 
 -- ============================================================================
--- 12. PG_CRON SCHEDULED JOBS & EXECUTION STATUS
+-- 12. PG_CRON SCHEDULED JOBS & EXECUTION MONITORING
 -- ============================================================================
 
--- 12.1 View all active scheduled cron jobs
+-- 12.1 View all active scheduled cron jobs and schedules
 SELECT jobid, jobname, schedule, active, command FROM cron.job ORDER BY jobid ASC;
 
--- 12.2 View recent execution runs of cron jobs
-SELECT jobid, runid, status, return_message, start_time, end_time FROM cron.job_run_details ORDER BY start_time DESC LIMIT 20;
+-- 12.2 ALL cron runs on a specific date (Enter date 'YYYY-MM-DD')
+SELECT d.runid, j.jobname, d.status, d.return_message, d.start_time, d.end_time, (d.end_time - d.start_time) AS duration FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE d.start_time::date = '' ORDER BY d.start_time DESC;
 
--- 12.3 View failures in cron execution
-SELECT j.jobname, d.status, d.return_message, d.start_time FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE d.status != 'succeeded' ORDER BY d.start_time DESC LIMIT 15;
+-- 12.3 Runs of a SPECIFIC CRON on a SPECIFIC date (Enter date 'YYYY-MM-DD' & cron jobname)
+SELECT d.runid, j.jobname, d.status, d.return_message, d.start_time, d.end_time, (d.end_time - d.start_time) AS duration FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE j.jobname = 'sync-prices' AND d.start_time::date = '' ORDER BY d.start_time DESC;
+
+-- 12.4 All cron FAILURES on a specific date (Enter date 'YYYY-MM-DD')
+SELECT d.runid, j.jobname, d.status, d.return_message, d.start_time, d.end_time FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE d.status != 'succeeded' AND d.start_time::date = '' ORDER BY d.start_time DESC;
+
+-- 12.5 Daily summary per cron job for a specific date: total runs, successes, failures (Enter date 'YYYY-MM-DD')
+SELECT j.jobname, COUNT(*) AS total_runs, COUNT(*) FILTER (WHERE d.status = 'succeeded') AS succeeded, COUNT(*) FILTER (WHERE d.status != 'succeeded') AS failed, MIN(d.start_time) AS first_run, MAX(d.start_time) AS last_run FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE d.start_time::date = '' GROUP BY j.jobname ORDER BY total_runs DESC;
 
 
 -- ============================================================================
--- 13. DATABASE UTILITIES & HEALTH CHECKS
+-- 13. DATA FRESHNESS & HEALTH CHECKS
 -- ============================================================================
 
 -- 13.1 Current database time in UTC and IST
 SELECT NOW() AS current_utc, NOW() AT TIME ZONE 'Asia/Kolkata' AS current_ist;
 
--- 13.2 Approximate row counts across all platform tables
+-- 13.2 Stock & ETF price freshness (see which securities haven't been updated recently)
+SELECT symbol, name, asset_type, current_price, last_updated FROM assets ORDER BY last_updated ASC LIMIT 25;
+
+-- 13.3 Mutual Fund NAV freshness (see oldest updated funds)
+SELECT scheme_code, name, nav, nav_date, last_updated FROM mf_schemes ORDER BY last_updated ASC LIMIT 25;
+
+-- 13.4 Approximate row counts across all platform tables
 SELECT relname AS table_name, n_live_tup AS estimated_rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC;
