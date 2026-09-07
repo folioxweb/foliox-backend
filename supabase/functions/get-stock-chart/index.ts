@@ -121,7 +121,7 @@ serve(withSystemLogging('get-stock-chart', async (req) => {
       symbol: ySymbol,
       currency: meta.currency || 'INR',
       regularMarketPrice: meta.regularMarketPrice,
-      previousClose: meta.previousClose,
+      previousClose: meta.previousClose ?? meta.chartPreviousClose ?? meta.regularMarketPrice,
       candles,
       volumeBars
     }), {
