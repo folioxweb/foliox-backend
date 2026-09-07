@@ -248,3 +248,24 @@ SELECT scheme_code, name, nav, nav_date, last_updated FROM mf_schemes ORDER BY l
 
 -- 13.4 Approximate row counts across all platform tables
 SELECT relname AS table_name, n_live_tup AS estimated_rows FROM pg_stat_user_tables ORDER BY n_live_tup DESC;
+
+
+-- ============================================================================
+-- 14. ADMIN RBAC & APM MONITORING
+-- ============================================================================
+
+-- 14.1 List all application admins and roles
+SELECT id, user_id, email, role, created_at FROM public.app_admins ORDER BY (CASE WHEN role = 'SUPER_ADMIN' THEN 1 ELSE 2 END), created_at ASC;
+
+-- 14.2 Grant admin role to an existing registered user
+SELECT public.grant_admin_role('user@example.com');
+
+-- 14.3 Revoke admin role from a user (cannot revoke SUPER_ADMIN)
+SELECT public.revoke_admin_role('user@example.com');
+
+-- 14.4 Test APM 24-hour health overview JSON
+SELECT public.get_admin_apm_overview();
+
+-- 14.5 Test pg_cron monitoring JSON
+SELECT public.get_admin_cron_monitoring(20);
+
