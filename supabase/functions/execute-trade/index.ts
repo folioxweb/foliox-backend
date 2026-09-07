@@ -223,11 +223,25 @@ serve(withSystemLogging('execute-trade', async (req) => {
         upsertConfig.id = 1;
       }
 
-      const { data, error } = await supabaseClient
-        .from('paper_portfolio_config')
-        .upsert(upsertConfig)
-        .select()
-        .single();
+      let data, error;
+      if (config) {
+        const res = await supabaseClient
+          .from('paper_portfolio_config')
+          .update(upsertConfig)
+          .eq('id', config.id)
+          .select()
+          .single();
+        data = res.data;
+        error = res.error;
+      } else {
+        const res = await supabaseClient
+          .from('paper_portfolio_config')
+          .insert(upsertConfig)
+          .select()
+          .single();
+        data = res.data;
+        error = res.error;
+      }
 
       if (error) throw error;
 
@@ -266,11 +280,25 @@ serve(withSystemLogging('execute-trade', async (req) => {
         resetConfig.id = 1;
       }
 
-      const { data: updatedConfig, error } = await supabaseClient
-        .from('paper_portfolio_config')
-        .upsert(resetConfig)
-        .select()
-        .single();
+      let updatedConfig, error;
+      if (config) {
+        const res = await supabaseClient
+          .from('paper_portfolio_config')
+          .update(resetConfig)
+          .eq('id', config.id)
+          .select()
+          .single();
+        updatedConfig = res.data;
+        error = res.error;
+      } else {
+        const res = await supabaseClient
+          .from('paper_portfolio_config')
+          .insert(resetConfig)
+          .select()
+          .single();
+        updatedConfig = res.data;
+        error = res.error;
+      }
 
       if (error) throw error;
 
