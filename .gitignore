@@ -13,3 +13,11 @@ Thumbs.db
 node_modules/
 .temp/
 .supabase/
+
+# Scratch & data migration scripts (may contain DB credentials)
+*.js
+*.sql
+!supabase/migrations/*.sql
+!useful_queries.sql
+package.json
+package-lock.json

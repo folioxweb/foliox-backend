@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
+import { withSystemLogging } from '../_shared/systemLogger.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -12,7 +13,7 @@ function toYahooSymbol(symbol: string): string {
   return s + '.NS';
 }
 
-serve(async (req) => {
+serve(withSystemLogging('get-stock-chart', async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -134,4 +135,13 @@ serve(async (req) => {
       status: 500
     });
   }
-});
+}, {
+  payloadFilter: (res) => ({
+    success: res?.success,
+    symbol: res?.symbol,
+    regularMarketPrice: res?.regularMarketPrice,
+    previousClose: res?.previousClose,
+    candleCount: res?.candles?.length
+  })
+}));
+

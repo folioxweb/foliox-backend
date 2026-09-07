@@ -1,5 +1,6 @@
 import { serve } from "https://deno.land/std@0.192.0/http/server.ts"
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.32.0'
+import { withSystemLogging, logUserAudit } from '../_shared/systemLogger.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -40,7 +41,7 @@ async function fetchLiveStockQuote(symbol: string): Promise<{ price: number; pre
   return null;
 }
 
-serve(async (req) => {
+serve(withSystemLogging('execute-trade', async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
@@ -53,6 +54,7 @@ serve(async (req) => {
     // Extract Authenticated User from JWT
     const authHeader = req.headers.get('Authorization');
     let userId: string | null = null;
+    let userEmail: string | null = null;
     if (authHeader) {
       const token = authHeader.replace(/^Bearer /i, '').trim();
       if (token && token !== supabaseServiceKey) {
@@ -60,6 +62,7 @@ serve(async (req) => {
           const { data: { user } } = await supabaseClient.auth.getUser(token);
           if (user) {
             userId = user.id;
+            userEmail = user.email || null;
           }
         } catch (_authErr) {
           // Token may be anon key
@@ -102,7 +105,9 @@ serve(async (req) => {
       interestRate, 
       startDate, 
       maturityDate, 
+      principal,
       fd_principal, 
+      rate,
       fd_rate, 
       fd_maturity_date, 
       tx_id, 
@@ -139,21 +144,31 @@ serve(async (req) => {
         added_at: new Date().toISOString()
       };
 
+      let resData: any = null;
+      let resError: any = null;
+
       if (userId) {
         watchItemData.user_id = userId;
+        const { data, error } = await supabaseClient
+          .from('watchlist_items')
+          .upsert(watchItemData, { onConflict: 'user_id,symbol' })
+          .select()
+          .single();
+        resData = data;
+        resError = error;
+      } else {
+        const { data, error } = await supabaseClient
+          .from('watchlist_items')
+          .insert(watchItemData)
+          .select()
+          .single();
+        resData = data;
+        resError = error;
       }
 
-      const onConflictTarget = userId ? 'user_id,symbol' : 'symbol';
+      if (resError) throw resError;
 
-      const { data, error } = await supabaseClient
-        .from('watchlist_items')
-        .upsert(watchItemData, { onConflict: onConflictTarget })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      return new Response(JSON.stringify({ success: true, item: data }), {
+      return new Response(JSON.stringify({ success: true, item: resData }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       });
@@ -652,26 +667,61 @@ serve(async (req) => {
           .eq('asset_id', target_asset_id);
       }
 
-      let delQuery = supabaseClient.from('transactions').delete().eq('asset_id', target_asset_id);
-      if (userId) delQuery = delQuery.eq('user_id', userId);
-      await delQuery;
-
-      const newTxData: Record<string, any> = {
-        asset_id: target_asset_id,
-        tx_type: 'BUY',
-        quantity: targetQty,
-        price: targetPrice,
-        tx_date: new Date().toISOString()
-      };
-      if (userId) newTxData.user_id = userId;
-
-      const { data: txData, error: txErr } = await supabaseClient
+      // 1. Fetch existing transactions for this asset and user
+      let txQuery = supabaseClient
         .from('transactions')
-        .insert(newTxData)
-        .select()
-        .single();
+        .select('tx_id, quantity, price, tx_date')
+        .eq('asset_id', target_asset_id);
+      if (userId) txQuery = txQuery.eq('user_id', userId);
+      const { data: existingTxs } = await txQuery.order('tx_date', { ascending: true });
 
-      if (txErr) throw txErr;
+      let txData: any = null;
+
+      if (existingTxs && existingTxs.length > 0) {
+        // In-place atomic update of primary transaction (preserves tx_id, tx_date & emits 1 audit event)
+        const primaryTxId = existingTxs[0].tx_id;
+        const { data: updatedTx, error: updateErr } = await supabaseClient
+          .from('transactions')
+          .update({
+            quantity: targetQty,
+            price: targetPrice,
+            tx_type: 'BUY'
+          })
+          .eq('tx_id', primaryTxId)
+          .select()
+          .single();
+
+        if (updateErr) throw updateErr;
+        txData = updatedTx;
+
+        // Clean up any extra legacy split rows if they existed
+        const extraIds = existingTxs.slice(1).map((t: any) => t.tx_id);
+        if (extraIds.length > 0) {
+          await supabaseClient
+            .from('transactions')
+            .delete()
+            .in('tx_id', extraIds);
+        }
+      } else {
+        // Fallback insert if no transaction existed for this asset
+        const newTxData: Record<string, any> = {
+          asset_id: target_asset_id,
+          tx_type: 'BUY',
+          quantity: targetQty,
+          price: targetPrice,
+          tx_date: new Date().toISOString()
+        };
+        if (userId) newTxData.user_id = userId;
+
+        const { data: insertedTx, error: insertErr } = await supabaseClient
+          .from('transactions')
+          .insert(newTxData)
+          .select()
+          .single();
+
+        if (insertErr) throw insertErr;
+        txData = insertedTx;
+      }
 
       return new Response(JSON.stringify({ 
         success: true, 
@@ -787,4 +837,4 @@ serve(async (req) => {
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
     )
   }
-})
+}))
