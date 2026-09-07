@@ -226,6 +226,12 @@ SELECT d.runid, j.jobname, d.status, d.return_message, d.start_time, d.end_time 
 -- 12.5 Daily summary per cron job for a specific date: total runs, successes, failures (Enter date 'YYYY-MM-DD')
 SELECT j.jobname, COUNT(*) AS total_runs, COUNT(*) FILTER (WHERE d.status = 'succeeded') AS succeeded, COUNT(*) FILTER (WHERE d.status != 'succeeded') AS failed, MIN(d.start_time) AS first_run, MAX(d.start_time) AS last_run FROM cron.job_run_details d JOIN cron.job j ON j.jobid = d.jobid WHERE d.start_time::date = '' GROUP BY j.jobname ORDER BY total_runs DESC;
 
+-- 12.6 Set sync-mfs to run every hour ('0 * * * *') using pg_cron built-in alter_job function
+SELECT cron.alter_job(job_id := (SELECT jobid FROM cron.job WHERE jobname = 'invoke-sync-mfs'), schedule := '0 * * * *');
+
+-- 12.7 Verify specific cron schedule details
+SELECT jobid, jobname, schedule, active, command FROM cron.job WHERE jobname = 'invoke-sync-mfs';
+
 
 -- ============================================================================
 -- 13. DATA FRESHNESS & HEALTH CHECKS
