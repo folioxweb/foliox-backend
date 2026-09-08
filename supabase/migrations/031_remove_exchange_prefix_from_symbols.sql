@@ -32,12 +32,29 @@ BEGIN
             SET asset_id = v_existing_asset_id, symbol = v_clean_symbol
             WHERE asset_id = rec.asset_id;
             
-            -- Re-point fund_holdings if any
+            -- Re-point fund_holdings: delete duplicate holding rows first to prevent fund_holdings_pkey collision
+            DELETE FROM fund_holdings fh_old
+            WHERE fh_old.fund_asset_id = rec.asset_id
+              AND EXISTS (
+                  SELECT 1 FROM fund_holdings fh_new
+                  WHERE fh_new.fund_asset_id = v_existing_asset_id
+                    AND fh_new.holding_type = fh_old.holding_type
+                    AND fh_new.holding_name = fh_old.holding_name
+              );
+
             UPDATE fund_holdings
             SET fund_asset_id = v_existing_asset_id
             WHERE fund_asset_id = rec.asset_id;
             
-            -- Re-point mf_sip_configs if any
+            -- Re-point mf_sip_configs: delete duplicate configs first to prevent unique_user_mf_sip collision
+            DELETE FROM mf_sip_configs m_old
+            WHERE m_old.asset_id = rec.asset_id
+              AND EXISTS (
+                  SELECT 1 FROM mf_sip_configs m_new
+                  WHERE m_new.asset_id = v_existing_asset_id
+                    AND (m_new.user_id = m_old.user_id OR (m_new.user_id IS NULL AND m_old.user_id IS NULL))
+              );
+
             UPDATE mf_sip_configs
             SET asset_id = v_existing_asset_id
             WHERE asset_id = rec.asset_id;
@@ -66,7 +83,7 @@ DECLARE
     v_exists BOOLEAN;
 BEGIN
     FOR w_rec IN 
-        SELECT id, user_id, symbol 
+        SELECT watchlist_id, user_id, symbol 
         FROM watchlist_items 
         WHERE symbol ILIKE 'NSE:%' OR symbol ILIKE 'BSE:%'
     LOOP
@@ -77,15 +94,15 @@ BEGIN
             SELECT 1 FROM watchlist_items 
             WHERE (user_id = w_rec.user_id OR (user_id IS NULL AND w_rec.user_id IS NULL))
               AND symbol = v_clean_w_symbol
-              AND id <> w_rec.id
+              AND watchlist_id <> w_rec.watchlist_id
         ) INTO v_exists;
         
         IF v_exists THEN
-            DELETE FROM watchlist_items WHERE id = w_rec.id;
+            DELETE FROM watchlist_items WHERE watchlist_id = w_rec.watchlist_id;
         ELSE
             UPDATE watchlist_items 
             SET symbol = v_clean_w_symbol 
-            WHERE id = w_rec.id;
+            WHERE watchlist_id = w_rec.watchlist_id;
         END IF;
     END LOOP;
 END $$;
@@ -95,38 +112,38 @@ DO $$
 DECLARE
     p_rec RECORD;
     v_clean_p_symbol TEXT;
-    v_exists BOOLEAN;
+    v_existing_paper_id UUID;
 BEGIN
     FOR p_rec IN 
-        SELECT id, user_id, symbol 
+        SELECT asset_id, user_id, symbol 
         FROM paper_assets 
         WHERE symbol ILIKE 'NSE:%' OR symbol ILIKE 'BSE:%'
     LOOP
         v_clean_p_symbol := REGEXP_REPLACE(p_rec.symbol, '^(NSE|BSE):', '', 'i');
         
-        SELECT EXISTS (
-            SELECT 1 FROM paper_assets 
-            WHERE (user_id = p_rec.user_id OR (user_id IS NULL AND p_rec.user_id IS NULL))
-              AND symbol = v_clean_p_symbol
-              AND id <> p_rec.id
-        ) INTO v_exists;
+        SELECT asset_id INTO v_existing_paper_id
+        FROM paper_assets 
+        WHERE (user_id = p_rec.user_id OR (user_id IS NULL AND p_rec.user_id IS NULL))
+          AND symbol = v_clean_p_symbol
+          AND asset_id <> p_rec.asset_id
+        LIMIT 1;
         
-        IF v_exists THEN
-            DELETE FROM paper_assets WHERE id = p_rec.id;
+        IF v_existing_paper_id IS NOT NULL THEN
+            -- Re-point paper transactions to the clean paper asset
+            UPDATE paper_transactions 
+            SET asset_id = v_existing_paper_id 
+            WHERE asset_id = p_rec.asset_id;
+            
+            DELETE FROM paper_assets WHERE asset_id = p_rec.asset_id;
         ELSE
             UPDATE paper_assets 
             SET symbol = v_clean_p_symbol 
-            WHERE id = p_rec.id;
+            WHERE asset_id = p_rec.asset_id;
         END IF;
     END LOOP;
 END $$;
 
--- 4. PAPER TRANSACTIONS CLEANUP
-UPDATE paper_transactions
-SET symbol = REGEXP_REPLACE(symbol, '^(NSE|BSE):', '', 'i')
-WHERE symbol ILIKE 'NSE:%' OR symbol ILIKE 'BSE:%';
-
--- 5. COMPANY DOCUMENTS CLEANUP
+-- 4. COMPANY DOCUMENTS CLEANUP
 UPDATE company_documents
 SET symbol = REGEXP_REPLACE(symbol, '^(NSE|BSE):', '', 'i')
 WHERE symbol ILIKE 'NSE:%' OR symbol ILIKE 'BSE:%';
