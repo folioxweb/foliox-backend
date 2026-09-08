@@ -368,6 +368,13 @@ serve(withSystemLogging('execute-trade', async (req) => {
           }
         }
 
+        let live = null;
+        try {
+          live = await fetchLiveStockQuote(sym);
+        } catch (_err) {
+          // ignore quote fetch error and fallback to buyPrice
+        }
+
         const newAssetData: Record<string, any> = {
           symbol: sym,
           name: name ? name.trim() : sym,
