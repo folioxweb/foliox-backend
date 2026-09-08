@@ -122,7 +122,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     // A. WATCHLIST ACTIONS
     // -----------------------------------------------------------------------
     if (action === 'addWatchlistItem') {
-      const sym = symbol ? symbol.trim().toUpperCase() : '';
+      const sym = symbol ? symbol.trim().replace(/^(NSE:|BSE:)/i, '').toUpperCase() : '';
       if (!sym) throw new Error('Symbol is required to add watchlist item');
 
       let currentPrice = Number(added_price || addedPrice || price || 0);
@@ -311,7 +311,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     if (action === 'addPaperHolding' || action === 'buyPaperStock') {
       const buyQty = Number(quantity);
       const buyPrice = Number(price);
-      const sym = symbol ? symbol.trim().toUpperCase() : '';
+      const sym = symbol ? symbol.trim().replace(/^(NSE:|BSE:)/i, '').toUpperCase() : '';
 
       if (!sym) throw new Error('Stock symbol is required');
       if (isNaN(buyQty) || buyQty <= 0) throw new Error('Quantity must be greater than 0');
@@ -474,7 +474,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     // -----------------------------------------------------------------------
     let target_asset_id = asset_id || assetId;
     let target_type = normalizeAssetType(asset_type || assetType);
-    let target_symbol = symbol ? symbol.trim() : '';
+    let target_symbol = symbol ? symbol.trim().replace(/^(NSE:|BSE:)/i, '') : '';
     const target_name = name ? name.trim() : target_symbol;
     const target_confidence = confidence || 'Medium';
     const target_trade_type = badge || trade_type || tradeType || 'Trade';

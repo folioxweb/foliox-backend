@@ -183,6 +183,16 @@ serve(withSystemLogging('sync-prices', async (req) => {
           }
         }
 
+        // Update Watchlist items if present
+        await supabaseAdmin
+          .from('watchlist_items')
+          .update({
+            current_price: quote.price,
+            prev_close: quote.prevClose,
+            last_price_updated: now
+          })
+          .eq('symbol', symbol);
+
         updatedCount++;
         updatedAssets.push({ symbol, price: quote.price, prevClose: quote.prevClose });
       }
