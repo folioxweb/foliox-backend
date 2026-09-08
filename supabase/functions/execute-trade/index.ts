@@ -92,6 +92,8 @@ serve(withSystemLogging('execute-trade', async (req) => {
       addedPrice,
       target_price,
       targetPrice,
+      stop_loss,
+      stopLoss,
       notes,
       watchlist_id,
       watchlistId,
@@ -375,6 +377,8 @@ serve(withSystemLogging('execute-trade', async (req) => {
           current_price: live ? live.price : buyPrice,
           prev_close: live ? live.prevClose : buyPrice,
           isin: isin || null,
+          stop_loss: stopLoss !== undefined ? (stopLoss ? Number(stopLoss) : null) : (stop_loss ? Number(stop_loss) : null),
+          target_price: targetPrice !== undefined ? (targetPrice ? Number(targetPrice) : null) : (target_price ? Number(target_price) : null),
           last_updated: new Date().toISOString()
         };
         if (userId) newAssetData.user_id = userId;
@@ -387,6 +391,23 @@ serve(withSystemLogging('execute-trade', async (req) => {
 
         if (pCreateErr) throw pCreateErr;
         pAsset = newPAsset;
+      } else {
+        const updates: Record<string, any> = {};
+        if (stopLoss !== undefined || stop_loss !== undefined) {
+          const sl = stopLoss ?? stop_loss;
+          updates.stop_loss = sl ? Number(sl) : null;
+        }
+        if (targetPrice !== undefined || target_price !== undefined) {
+          const tp = targetPrice ?? target_price;
+          updates.target_price = tp ? Number(tp) : null;
+        }
+        if (confidence) updates.confidence = confidence;
+        if (badge || trade_type || tradeType) updates.trade_type = badge || trade_type || tradeType;
+        if (sector) updates.sector = sector;
+        if (Object.keys(updates).length > 0) {
+          updates.last_updated = new Date().toISOString();
+          await supabaseClient.from('paper_assets').update(updates).eq('asset_id', pAsset.asset_id);
+        }
       }
 
       // Insert Paper BUY transaction
@@ -491,6 +512,40 @@ serve(withSystemLogging('execute-trade', async (req) => {
       }
 
       return new Response(JSON.stringify({ success: true, realizedGain }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
+    if (action === 'updatePaperHolding') {
+      const targetPaperId = asset_id || assetId;
+      if (!targetPaperId) throw new Error('Paper Asset ID is required to update holding');
+
+      const updates: Record<string, any> = {};
+      if (stopLoss !== undefined || stop_loss !== undefined) {
+        const sl = stopLoss ?? stop_loss;
+        updates.stop_loss = sl ? Number(sl) : null;
+      }
+      if (targetPrice !== undefined || target_price !== undefined) {
+        const tp = targetPrice ?? target_price;
+        updates.target_price = tp ? Number(tp) : null;
+      }
+      if (confidence) updates.confidence = confidence;
+      if (badge || trade_type || tradeType) updates.trade_type = badge || trade_type || tradeType;
+      if (sector) updates.sector = sector;
+      updates.last_updated = new Date().toISOString();
+
+      let updateAssetQuery = supabaseClient
+        .from('paper_assets')
+        .update(updates)
+        .eq('asset_id', targetPaperId);
+
+      if (userId) updateAssetQuery = updateAssetQuery.eq('user_id', userId);
+
+      const { data, error } = await updateAssetQuery.select().single();
+      if (error) throw error;
+
+      return new Response(JSON.stringify({ success: true, updatedAsset: data }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       });
