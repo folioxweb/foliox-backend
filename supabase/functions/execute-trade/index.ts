@@ -504,6 +504,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     let target_symbol = symbol ? symbol.trim().replace(/^(NSE:|BSE:)/i, '') : '';
     const target_name = name ? name.trim() : target_symbol;
     const target_confidence = confidence || 'Medium';
+    const target_trade_type = badge || trade_type || tradeType || 'Trade';
     let target_sector = sector || null;
 
     if (!target_symbol) {
