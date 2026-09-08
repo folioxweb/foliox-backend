@@ -103,6 +103,70 @@ serve(withSystemLogging('sync-nse-stocks', async (req) => {
       console.warn("Error fetching NSE ETF CSV:", etfErr);
     }
 
+    // 3. Ingest Sector Mappings from NSE Indices
+    const sectorMap: Record<string, string> = {};
+    const industryMap: Record<string, string> = {};
+
+    const SECTOR_NORMALIZATION: Record<string, string> = {
+      'Information Technology': 'Technology',
+      'Oil Gas & Consumable Fuels': 'Oil, Gas & Consumable Fuels',
+      'Media Entertainment & Publication': 'Media, Entertainment & Publication',
+      'Forest Materials': 'Basic Materials',
+    };
+
+    function normalizeSector(ind: string): string {
+      if (!ind) return '';
+      const trimmed = ind.trim();
+      return SECTOR_NORMALIZATION[trimmed] || trimmed;
+    }
+
+    const indexUrls = [
+      "https://archives.nseindia.com/content/indices/ind_niftytotalmarket_list.csv",
+      "https://archives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv"
+    ];
+
+    for (const idxUrl of indexUrls) {
+      try {
+        const idxRes = await fetch(idxUrl, { headers: reqHeaders });
+        if (idxRes.ok) {
+          const idxText = await idxRes.text();
+          const idxLines = idxText.split(/\r?\n/).filter(line => line.trim().length > 0);
+          // Header: Company Name,Industry,Symbol,Series,ISIN Code
+          for (let i = 1; i < idxLines.length; i++) {
+            const cols = idxLines[i].split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+            if (cols.length >= 5) {
+              const ind = cols[1];
+              const sym = cols[2]?.toUpperCase();
+              const isinCode = cols[4]?.toUpperCase();
+              const normSec = normalizeSector(ind);
+
+              if (sym && normSec) {
+                sectorMap[sym] = normSec;
+                industryMap[sym] = ind;
+              }
+              if (isinCode && normSec) {
+                sectorMap[isinCode] = normSec;
+                industryMap[isinCode] = ind;
+              }
+            }
+          }
+        }
+      } catch (idxErr) {
+        console.warn(`Error fetching NSE index CSV (${idxUrl}):`, idxErr);
+      }
+    }
+
+    // Attach sector and industry to equity records
+    for (const rec of records) {
+      if (rec.series !== 'ETF') {
+        const mappedSec = sectorMap[rec.symbol] || (rec.isin ? sectorMap[rec.isin] : null);
+        if (mappedSec) {
+          rec.sector = mappedSec;
+          rec.industry = industryMap[rec.symbol] || (rec.isin ? industryMap[rec.isin] : null) || mappedSec;
+        }
+      }
+    }
+
     if (records.length === 0) {
       throw new Error("No valid stock or ETF records parsed from NSE");
     }
@@ -124,10 +188,43 @@ serve(withSystemLogging('sync-nse-stocks', async (req) => {
       }
     }
 
+    // Backfill any existing portfolio assets and paper assets where sector is missing
+    let backfilledAssets = 0;
+    try {
+      const { data: nullAssets } = await supabaseAdmin
+        .from('assets')
+        .select('asset_id, symbol, isin')
+        .is('sector', null);
+
+      for (const asset of nullAssets || []) {
+        const sec = sectorMap[asset.symbol] || (asset.isin ? sectorMap[asset.isin] : null);
+        if (sec) {
+          await supabaseAdmin.from('assets').update({ sector: sec }).eq('asset_id', asset.asset_id);
+          backfilledAssets++;
+        }
+      }
+
+      const { data: nullPaperAssets } = await supabaseAdmin
+        .from('paper_assets')
+        .select('asset_id, symbol')
+        .is('sector', null);
+
+      for (const pAsset of nullPaperAssets || []) {
+        const sec = sectorMap[pAsset.symbol];
+        if (sec) {
+          await supabaseAdmin.from('paper_assets').update({ sector: sec }).eq('asset_id', pAsset.asset_id);
+        }
+      }
+    } catch (bfErr) {
+      console.warn("Backfill assets sector error:", bfErr);
+    }
+
     return new Response(JSON.stringify({
       success: true,
       totalParsed: records.length,
+      sectorsMapped: Object.keys(sectorMap).length,
       upsertedCount,
+      backfilledAssets,
       timestamp: now
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

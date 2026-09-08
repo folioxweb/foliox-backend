@@ -131,11 +131,25 @@ serve(withSystemLogging('execute-trade', async (req) => {
         if (live) currentPrice = live.price;
       }
 
+      let resolvedSector = sector || null;
+      if (!resolvedSector) {
+        try {
+          const { data: nseStock } = await supabaseClient
+            .from('nse_stocks')
+            .select('sector')
+            .eq('symbol', sym)
+            .maybeSingle();
+          if (nseStock?.sector) resolvedSector = nseStock.sector;
+        } catch (_err) {
+          // ignore
+        }
+      }
+
       const watchItemData: Record<string, any> = {
         symbol: sym,
         isin: isin || null,
         name: name ? name.trim() : sym,
-        sector: sector || null,
+        sector: resolvedSector,
         confidence: confidence || 'Medium',
         badge: badge || trade_type || tradeType || 'Trade',
         added_price: currentPrice > 0 ? currentPrice : 0,
@@ -338,11 +352,24 @@ serve(withSystemLogging('execute-trade', async (req) => {
       let { data: pAsset } = await assetQuery.maybeSingle();
 
       if (!pAsset) {
-        const live = await fetchLiveStockQuote(sym);
+        let paperSector = sector || null;
+        if (!paperSector) {
+          try {
+            const { data: nseStock } = await supabaseClient
+              .from('nse_stocks')
+              .select('sector')
+              .eq('symbol', sym)
+              .maybeSingle();
+            if (nseStock?.sector) paperSector = nseStock.sector;
+          } catch (_err) {
+            // ignore
+          }
+        }
+
         const newAssetData: Record<string, any> = {
           symbol: sym,
           name: name ? name.trim() : sym,
-          sector: sector || null,
+          sector: paperSector,
           confidence: confidence || 'Medium',
           trade_type: badge || trade_type || tradeType || 'Trade',
           current_price: live ? live.price : buyPrice,
@@ -477,8 +504,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     let target_symbol = symbol ? symbol.trim().replace(/^(NSE:|BSE:)/i, '') : '';
     const target_name = name ? name.trim() : target_symbol;
     const target_confidence = confidence || 'Medium';
-    const target_trade_type = badge || trade_type || tradeType || 'Trade';
-    const target_sector = sector || null;
+    let target_sector = sector || null;
 
     if (!target_symbol) {
       if (target_type === 'FD') {
@@ -487,6 +513,24 @@ serve(withSystemLogging('execute-trade', async (req) => {
         target_symbol = mfApiCode ? `AMFI_${mfApiCode}` : (fundCode ? fundCode.trim() : `MF:${target_name.replace(/\s+/g, '_')}`);
       } else {
         target_symbol = `ASSET_${Date.now()}`;
+      }
+    }
+
+    // Auto-resolve sector from nse_stocks if omitted
+    if (!target_sector && (target_type === 'STOCK' || target_type === 'ETF')) {
+      try {
+        let nseQuery = supabaseClient.from('nse_stocks').select('sector');
+        if (target_symbol && !target_symbol.startsWith('ASSET_')) {
+          nseQuery = nseQuery.eq('symbol', target_symbol);
+        } else if (isin) {
+          nseQuery = nseQuery.eq('isin', isin);
+        }
+        const { data: nseStock } = await nseQuery.maybeSingle();
+        if (nseStock?.sector) {
+          target_sector = nseStock.sector;
+        }
+      } catch (_secErr) {
+        // Continue gracefully
       }
     }
 
