@@ -16,8 +16,6 @@ SELECT a.asset_id,
     a.trade_type AS badge,
     a.current_price,
     a.prev_close,
-    a.stop_loss,
-    a.target_price,
     sum(t.quantity) AS total_quantity,
     sum(t.quantity * t.price) / NULLIF(sum(t.quantity), 0::numeric) AS avg_price,
     sum(t.quantity * t.price) AS invested_value,
@@ -31,7 +29,9 @@ SELECT a.asset_id,
         CASE
             WHEN a.prev_close > 0::numeric THEN (a.current_price - a.prev_close) / a.prev_close * 100::numeric
             ELSE 0::numeric
-        END AS day_change_pct
+        END AS day_change_pct,
+    a.stop_loss,
+    a.target_price
    FROM paper_assets a
      JOIN paper_transactions t ON a.asset_id = t.asset_id
   GROUP BY a.asset_id, a.symbol, a.name, a.sector, a.confidence, a.trade_type, a.current_price, a.prev_close, a.stop_loss, a.target_price
