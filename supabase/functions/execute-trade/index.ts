@@ -92,6 +92,8 @@ serve(withSystemLogging('execute-trade', async (req) => {
       addedPrice,
       target_price,
       targetPrice,
+      stop_loss,
+      stopLoss,
       notes,
       watchlist_id,
       watchlistId,
@@ -131,11 +133,25 @@ serve(withSystemLogging('execute-trade', async (req) => {
         if (live) currentPrice = live.price;
       }
 
+      let resolvedSector = sector || null;
+      if (!resolvedSector) {
+        try {
+          const { data: nseStock } = await supabaseClient
+            .from('nse_stocks')
+            .select('sector')
+            .eq('symbol', sym)
+            .maybeSingle();
+          if (nseStock?.sector) resolvedSector = nseStock.sector;
+        } catch (_err) {
+          // ignore
+        }
+      }
+
       const watchItemData: Record<string, any> = {
         symbol: sym,
         isin: isin || null,
         name: name ? name.trim() : sym,
-        sector: sector || null,
+        sector: resolvedSector,
         confidence: confidence || 'Medium',
         badge: badge || trade_type || tradeType || 'Trade',
         added_price: currentPrice > 0 ? currentPrice : 0,
@@ -338,16 +354,31 @@ serve(withSystemLogging('execute-trade', async (req) => {
       let { data: pAsset } = await assetQuery.maybeSingle();
 
       if (!pAsset) {
-        const live = await fetchLiveStockQuote(sym);
+        let paperSector = sector || null;
+        if (!paperSector) {
+          try {
+            const { data: nseStock } = await supabaseClient
+              .from('nse_stocks')
+              .select('sector')
+              .eq('symbol', sym)
+              .maybeSingle();
+            if (nseStock?.sector) paperSector = nseStock.sector;
+          } catch (_err) {
+            // ignore
+          }
+        }
+
         const newAssetData: Record<string, any> = {
           symbol: sym,
           name: name ? name.trim() : sym,
-          sector: sector || null,
+          sector: paperSector,
           confidence: confidence || 'Medium',
           trade_type: badge || trade_type || tradeType || 'Trade',
           current_price: live ? live.price : buyPrice,
           prev_close: live ? live.prevClose : buyPrice,
           isin: isin || null,
+          stop_loss: stopLoss !== undefined ? (stopLoss ? Number(stopLoss) : null) : (stop_loss ? Number(stop_loss) : null),
+          target_price: targetPrice !== undefined ? (targetPrice ? Number(targetPrice) : null) : (target_price ? Number(target_price) : null),
           last_updated: new Date().toISOString()
         };
         if (userId) newAssetData.user_id = userId;
@@ -360,6 +391,23 @@ serve(withSystemLogging('execute-trade', async (req) => {
 
         if (pCreateErr) throw pCreateErr;
         pAsset = newPAsset;
+      } else {
+        const updates: Record<string, any> = {};
+        if (stopLoss !== undefined || stop_loss !== undefined) {
+          const sl = stopLoss ?? stop_loss;
+          updates.stop_loss = sl ? Number(sl) : null;
+        }
+        if (targetPrice !== undefined || target_price !== undefined) {
+          const tp = targetPrice ?? target_price;
+          updates.target_price = tp ? Number(tp) : null;
+        }
+        if (confidence) updates.confidence = confidence;
+        if (badge || trade_type || tradeType) updates.trade_type = badge || trade_type || tradeType;
+        if (sector) updates.sector = sector;
+        if (Object.keys(updates).length > 0) {
+          updates.last_updated = new Date().toISOString();
+          await supabaseClient.from('paper_assets').update(updates).eq('asset_id', pAsset.asset_id);
+        }
       }
 
       // Insert Paper BUY transaction
@@ -423,10 +471,8 @@ serve(withSystemLogging('execute-trade', async (req) => {
       const proceeds = sellQty * finalSellPrice;
       const realizedGain = (finalSellPrice - avgPrice) * sellQty;
 
-      if (sellQty === curQty) {
-        let delQuery = supabaseClient.from('paper_transactions').delete().eq('asset_id', targetPaperId);
-        if (userId) delQuery = delQuery.eq('user_id', userId);
-        await delQuery;
+      if (sellQty >= curQty) {
+        await supabaseClient.from('paper_transactions').delete().eq('asset_id', targetPaperId);
       } else {
         const sellTxData: Record<string, any> = {
           asset_id: targetPaperId,
@@ -469,6 +515,44 @@ serve(withSystemLogging('execute-trade', async (req) => {
       });
     }
 
+    if (action === 'updatePaperHolding') {
+      const targetPaperId = asset_id || assetId;
+      if (!targetPaperId) throw new Error('Paper Asset ID is required to update holding');
+
+      const updates: Record<string, any> = {};
+      if (stopLoss !== undefined || stop_loss !== undefined) {
+        const sl = stopLoss ?? stop_loss;
+        updates.stop_loss = (sl !== null && sl !== '' && !isNaN(Number(sl))) ? Number(sl) : null;
+      }
+      if (targetPrice !== undefined || target_price !== undefined) {
+        const tp = targetPrice ?? target_price;
+        updates.target_price = (tp !== null && tp !== '' && !isNaN(Number(tp))) ? Number(tp) : null;
+      }
+      if (confidence) updates.confidence = confidence;
+      if (badge || trade_type || tradeType) updates.trade_type = badge || trade_type || tradeType;
+      if (sector) updates.sector = sector;
+      updates.last_updated = new Date().toISOString();
+
+      if (userId) {
+        updates.user_id = userId;
+      }
+
+      const { data, error } = await supabaseClient
+        .from('paper_assets')
+        .update(updates)
+        .eq('asset_id', targetPaperId)
+        .select()
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!data) throw new Error(`Paper asset ${targetPaperId} not found`);
+
+      return new Response(JSON.stringify({ success: true, updatedAsset: data }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
     // -----------------------------------------------------------------------
     // C. REAL PORTFOLIO ACTIONS
     // -----------------------------------------------------------------------
@@ -478,7 +562,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
     const target_name = name ? name.trim() : target_symbol;
     const target_confidence = confidence || 'Medium';
     const target_trade_type = badge || trade_type || tradeType || 'Trade';
-    const target_sector = sector || null;
+    let target_sector = sector || null;
 
     if (!target_symbol) {
       if (target_type === 'FD') {
@@ -487,6 +571,24 @@ serve(withSystemLogging('execute-trade', async (req) => {
         target_symbol = mfApiCode ? `AMFI_${mfApiCode}` : (fundCode ? fundCode.trim() : `MF:${target_name.replace(/\s+/g, '_')}`);
       } else {
         target_symbol = `ASSET_${Date.now()}`;
+      }
+    }
+
+    // Auto-resolve sector from nse_stocks if omitted
+    if (!target_sector && (target_type === 'STOCK' || target_type === 'ETF')) {
+      try {
+        let nseQuery = supabaseClient.from('nse_stocks').select('sector');
+        if (target_symbol && !target_symbol.startsWith('ASSET_')) {
+          nseQuery = nseQuery.eq('symbol', target_symbol);
+        } else if (isin) {
+          nseQuery = nseQuery.eq('isin', isin);
+        }
+        const { data: nseStock } = await nseQuery.maybeSingle();
+        if (nseStock?.sector) {
+          target_sector = nseStock.sector;
+        }
+      } catch (_secErr) {
+        // Continue gracefully
       }
     }
 
