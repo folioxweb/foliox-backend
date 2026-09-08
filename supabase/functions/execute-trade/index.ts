@@ -471,10 +471,8 @@ serve(withSystemLogging('execute-trade', async (req) => {
       const proceeds = sellQty * finalSellPrice;
       const realizedGain = (finalSellPrice - avgPrice) * sellQty;
 
-      if (sellQty === curQty) {
-        let delQuery = supabaseClient.from('paper_transactions').delete().eq('asset_id', targetPaperId);
-        if (userId) delQuery = delQuery.eq('user_id', userId);
-        await delQuery;
+      if (sellQty >= curQty) {
+        await supabaseClient.from('paper_transactions').delete().eq('asset_id', targetPaperId);
       } else {
         const sellTxData: Record<string, any> = {
           asset_id: targetPaperId,
@@ -524,26 +522,30 @@ serve(withSystemLogging('execute-trade', async (req) => {
       const updates: Record<string, any> = {};
       if (stopLoss !== undefined || stop_loss !== undefined) {
         const sl = stopLoss ?? stop_loss;
-        updates.stop_loss = sl ? Number(sl) : null;
+        updates.stop_loss = (sl !== null && sl !== '' && !isNaN(Number(sl))) ? Number(sl) : null;
       }
       if (targetPrice !== undefined || target_price !== undefined) {
         const tp = targetPrice ?? target_price;
-        updates.target_price = tp ? Number(tp) : null;
+        updates.target_price = (tp !== null && tp !== '' && !isNaN(Number(tp))) ? Number(tp) : null;
       }
       if (confidence) updates.confidence = confidence;
       if (badge || trade_type || tradeType) updates.trade_type = badge || trade_type || tradeType;
       if (sector) updates.sector = sector;
       updates.last_updated = new Date().toISOString();
 
-      let updateAssetQuery = supabaseClient
+      if (userId) {
+        updates.user_id = userId;
+      }
+
+      const { data, error } = await supabaseClient
         .from('paper_assets')
         .update(updates)
-        .eq('asset_id', targetPaperId);
+        .eq('asset_id', targetPaperId)
+        .select()
+        .maybeSingle();
 
-      if (userId) updateAssetQuery = updateAssetQuery.eq('user_id', userId);
-
-      const { data, error } = await updateAssetQuery.select().single();
       if (error) throw error;
+      if (!data) throw new Error(`Paper asset ${targetPaperId} not found`);
 
       return new Response(JSON.stringify({ success: true, updatedAsset: data }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
