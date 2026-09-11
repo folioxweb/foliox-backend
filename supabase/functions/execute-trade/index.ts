@@ -423,6 +423,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
         tx_type: 'BUY',
         quantity: buyQty,
         price: buyPrice,
+        cost_price: buyPrice,
         tx_date: new Date().toISOString()
       };
       if (userId) txPayload.user_id = userId;
@@ -478,21 +479,18 @@ serve(withSystemLogging('execute-trade', async (req) => {
       const proceeds = sellQty * finalSellPrice;
       const realizedGain = (finalSellPrice - avgPrice) * sellQty;
 
-      if (sellQty >= curQty) {
-        await supabaseClient.from('paper_transactions').delete().eq('asset_id', targetPaperId);
-      } else {
-        const sellTxData: Record<string, any> = {
-          asset_id: targetPaperId,
-          tx_type: 'SELL',
-          quantity: -Math.abs(sellQty),
-          price: finalSellPrice,
-          realized_gain: realizedGain,
-          tx_date: new Date().toISOString()
-        };
-        if (userId) sellTxData.user_id = userId;
+      const sellTxData: Record<string, any> = {
+        asset_id: targetPaperId,
+        tx_type: 'SELL',
+        quantity: -Math.abs(sellQty),
+        price: finalSellPrice,
+        cost_price: avgPrice,
+        realized_gain: realizedGain,
+        tx_date: new Date().toISOString()
+      };
+      if (userId) sellTxData.user_id = userId;
 
-        await supabaseClient.from('paper_transactions').insert(sellTxData);
-      }
+      await supabaseClient.from('paper_transactions').insert(sellTxData);
 
       // Update paper config cash and realized PnL
       let configQuery = supabaseClient.from('paper_portfolio_config').select('*');
@@ -724,6 +722,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
         tx_type: 'BUY',
         quantity: 1,
         price: principalVal,
+        cost_price: principalVal,
         fd_principal: principalVal,
         fd_rate: rateVal,
         fd_maturity_date: maturityVal,
@@ -746,12 +745,28 @@ serve(withSystemLogging('execute-trade', async (req) => {
 
     if (action === 'deleteFD') {
       const target_tx_id = tx_id || txId;
-      if (!target_tx_id) throw new Error('Transaction ID is required to delete an FD');
-      let delQuery = supabaseClient.from('transactions').delete().eq('tx_id', target_tx_id);
+      const target_asset_id = asset_id || assetId;
+      if (!target_tx_id && !target_asset_id) throw new Error('Transaction ID or Asset ID is required to delete an FD');
+
+      let delQuery = supabaseClient.from('transactions').delete();
+      if (target_tx_id) {
+        delQuery = delQuery.eq('tx_id', target_tx_id);
+      } else {
+        delQuery = delQuery.eq('asset_id', target_asset_id);
+      }
       if (userId) delQuery = delQuery.eq('user_id', userId);
       const { error } = await delQuery;
       if (error) throw error;
-      return new Response(JSON.stringify({ success: true, deleted: target_tx_id }), {
+
+      if (target_asset_id) {
+        try {
+          await supabaseClient.from('assets').delete().eq('asset_id', target_asset_id).eq('asset_type', 'FD');
+        } catch (_e) {
+          // ignore if other references exist
+        }
+      }
+
+      return new Response(JSON.stringify({ success: true, deleted: target_tx_id || target_asset_id }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
       });
@@ -759,9 +774,11 @@ serve(withSystemLogging('execute-trade', async (req) => {
 
     if (action === 'updateFD') {
       const target_tx_id = tx_id || txId;
+      const target_asset_id = asset_id || assetId;
       const updates: Record<string, any> = {};
       if (principalVal) {
         updates.price = principalVal;
+        updates.cost_price = principalVal;
         updates.fd_principal = principalVal;
       }
       if (rateVal) updates.fd_rate = rateVal;
@@ -772,12 +789,20 @@ serve(withSystemLogging('execute-trade', async (req) => {
       if (userId) query = query.eq('user_id', userId);
       if (target_tx_id) {
         query = query.eq('tx_id', target_tx_id);
-      } else {
+      } else if (target_asset_id) {
         query = query.eq('asset_id', target_asset_id);
+      } else {
+        throw new Error('Transaction ID or Asset ID is required to update an FD');
       }
 
       const { data, error } = await query.select();
       if (error) throw error;
+
+      const newBankName = target_name || name || bankName;
+      if (newBankName && target_asset_id) {
+        await supabaseClient.from('assets').update({ name: String(newBankName).trim() }).eq('asset_id', target_asset_id);
+      }
+
       return new Response(JSON.stringify({ success: true, transaction: data }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 200,
@@ -822,6 +847,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
           .update({
             quantity: targetQty,
             price: targetPrice,
+            cost_price: targetPrice,
             tx_type: 'BUY'
           })
           .eq('tx_id', primaryTxId)
@@ -846,6 +872,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
           tx_type: 'BUY',
           quantity: targetQty,
           price: targetPrice,
+          cost_price: targetPrice,
           tx_date: new Date().toISOString()
         };
         if (userId) newTxData.user_id = userId;
@@ -887,48 +914,45 @@ serve(withSystemLogging('execute-trade', async (req) => {
       if (sellQty > currentQty) throw new Error(`Cannot sell ${sellQty} units. You only hold ${currentQty} units.`);
 
       const sellPrice = Number(price) > 0 ? Number(price) : Number(holdingData?.current_price || holdingData?.avg_price || 0);
+      const avgPrice = Number(holdingData?.avg_price || 0);
+      const realizedGain = (sellPrice - avgPrice) * sellQty;
 
-      if (sellQty === currentQty) {
-        let delQuery = supabaseClient.from('transactions').delete().eq('asset_id', target_asset_id);
-        if (userId) delQuery = delQuery.eq('user_id', userId);
-        await delQuery;
+      const sellTxData: Record<string, any> = {
+        asset_id: target_asset_id,
+        tx_type: 'SELL',
+        quantity: -Math.abs(sellQty),
+        price: sellPrice,
+        cost_price: avgPrice,
+        realized_gain: realizedGain,
+        tx_date: new Date().toISOString()
+      };
+      if (userId) sellTxData.user_id = userId;
 
-        return new Response(JSON.stringify({ 
-          success: true, 
-          fullySold: true, 
-          message: 'Holding completely sold and removed from portfolio.' 
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200,
-        });
-      } else {
-        const sellTxData: Record<string, any> = {
-          asset_id: target_asset_id,
-          tx_type: 'SELL',
-          quantity: -Math.abs(sellQty),
-          price: sellPrice,
-          tx_date: new Date().toISOString()
-        };
-        if (userId) sellTxData.user_id = userId;
+      const { data: txData, error: txErr } = await supabaseClient
+        .from('transactions')
+        .insert(sellTxData)
+        .select()
+        .single();
 
-        const { data: txData, error: txErr } = await supabaseClient
-          .from('transactions')
-          .insert(sellTxData)
-          .select()
-          .single();
+      if (txErr) throw txErr;
 
-        if (txErr) throw txErr;
+      const fullySold = (sellQty >= currentQty);
 
-        return new Response(JSON.stringify({ 
-          success: true, 
-          fullySold: false, 
-          remainingQuantity: currentQty - sellQty,
-          transaction: txData 
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200,
-        });
+      if (fullySold) {
+        let sipDel = supabaseClient.from('mf_sip_configs').delete().eq('asset_id', target_asset_id);
+        if (userId) sipDel = sipDel.eq('user_id', userId);
+        await sipDel;
       }
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        fullySold, 
+        remainingQuantity: Math.max(0, currentQty - sellQty),
+        transaction: txData 
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
     }
 
     // 6. Handle Stock / ETF / MF: buyMore / addHolding
@@ -944,6 +968,7 @@ serve(withSystemLogging('execute-trade', async (req) => {
         tx_type: 'BUY',
         quantity: buyQty,
         price: buyPrice,
+        cost_price: buyPrice,
         tx_date: new Date().toISOString()
       };
       if (userId) buyTxData.user_id = userId;
