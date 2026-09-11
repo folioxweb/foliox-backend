@@ -60,7 +60,116 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       authHeader && !serviceRoleKey ? { global: { headers: { Authorization: authHeader } } } : undefined
     );
 
-    // Fetch ALL MFs and ETFs with ISINs
+    // Check if on-demand single-fund sync was requested
+    let targetAssetId: string | null = null;
+    let targetIsin: string | null = null;
+
+    if (req.method === 'POST') {
+      try {
+        const body = await req.json();
+        targetAssetId = body.asset_id || body.assetId || null;
+        targetIsin = body.isin || null;
+      } catch (_e) {
+        // Body might be empty
+      }
+    }
+
+    if (!targetAssetId || !targetIsin) {
+      try {
+        const url = new URL(req.url);
+        targetAssetId = targetAssetId || url.searchParams.get('asset_id') || url.searchParams.get('assetId');
+        targetIsin = targetIsin || url.searchParams.get('isin');
+      } catch (_e) {}
+    }
+
+    // Auto-resolve ISIN from database if asset_id was provided without ISIN
+    if (targetAssetId && !targetIsin) {
+      const { data: assetRow } = await supabaseAdmin
+        .from('assets')
+        .select('isin')
+        .eq('asset_id', targetAssetId)
+        .maybeSingle();
+      if (assetRow?.isin) targetIsin = assetRow.isin.trim();
+    }
+
+    // -------------------------------------------------------------------------
+    // A. Single-Fund On-Demand Sync
+    // -------------------------------------------------------------------------
+    if (targetAssetId && targetIsin) {
+      const cleanIsin = targetIsin.trim();
+      if (cleanIsin.length !== 12) {
+        throw new Error(`Invalid ISIN format: "${cleanIsin}"`);
+      }
+
+      const rawHoldings = await fetchHoldings(cleanIsin);
+      const stockMap: Record<string, number> = {};
+      const sectorMap: Record<string, number> = {};
+      const singleHoldings: any[] = [];
+
+      for (const item of rawHoldings) {
+        if (!item.name || isNaN(Number(item.weightage))) continue;
+        const name = item.name.trim();
+        const weight = Number(item.weightage);
+        if (weight <= 0) continue;
+
+        stockMap[name] = (stockMap[name] || 0) + weight;
+
+        if (item.sector) {
+          const sector = item.sector.trim();
+          if (sector) sectorMap[sector] = (sectorMap[sector] || 0) + weight;
+        }
+      }
+
+      for (const [name, weight] of Object.entries(stockMap)) {
+        singleHoldings.push({
+          fund_asset_id: targetAssetId,
+          holding_type: 'STOCK',
+          holding_name: name,
+          weight_percentage: Number(weight.toFixed(2))
+        });
+      }
+
+      for (const [name, weight] of Object.entries(sectorMap)) {
+        singleHoldings.push({
+          fund_asset_id: targetAssetId,
+          holding_type: 'SECTOR',
+          holding_name: name,
+          weight_percentage: Number(weight.toFixed(2))
+        });
+      }
+
+      // Atomically replace holdings for this specific fund
+      await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', targetAssetId);
+
+      if (singleHoldings.length > 0) {
+        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+        if (insErr) throw insErr;
+      }
+
+      const stocks = Object.entries(stockMap)
+        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      const sectors = Object.entries(sectorMap)
+        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        asset_id: targetAssetId, 
+        isin: cleanIsin, 
+        stocks, 
+        sectors, 
+        rowsInserted: singleHoldings.length 
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // B. Batch Cron Sync (All MFs & ETFs with ISINs)
+    // -------------------------------------------------------------------------
     const { data: assets, error: fetchErr } = await supabaseAdmin
       .from('assets')
       .select('asset_id, symbol, name, isin, asset_type')
