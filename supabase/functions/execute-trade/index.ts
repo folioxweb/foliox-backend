@@ -991,6 +991,29 @@ serve(withSystemLogging('execute-trade', async (req) => {
       });
     }
 
+    // 7. Handle Delete Holding (Direct Purge)
+    if (action === 'deleteHolding') {
+      if (!target_asset_id) throw new Error('Asset ID is required to delete holding');
+
+      let delTxQuery = supabaseClient.from('transactions').delete().eq('asset_id', target_asset_id);
+      if (userId) delTxQuery = delTxQuery.eq('user_id', userId);
+      const { error: txErr } = await delTxQuery;
+      if (txErr) throw txErr;
+
+      let delSipQuery = supabaseClient.from('mf_sip_configs').delete().eq('asset_id', target_asset_id);
+      if (userId) delSipQuery = delSipQuery.eq('user_id', userId);
+      await delSipQuery;
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        message: 'Position deleted successfully', 
+        deletedAssetId: target_asset_id 
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
     throw new Error('Invalid action provided: ' + action);
 
   } catch (err: any) {
