@@ -30,13 +30,20 @@ async function fetchHoldings(isin: string): Promise<any[]> {
 
       const json = await res.json();
 
-      if (json.status !== "success" || !json.data || !Array.isArray(json.data.holdings)) {
-        throw new Error(`FinAPI error: ${json.message || json.status}`);
+      if (json?.data && Array.isArray(json.data.holdings)) {
+        return json.data.holdings;
+      }
+      if (Array.isArray(json?.data)) {
+        return json.data;
       }
 
-      return json.data.holdings;
+      // Upstream feed may not disclose holdings under this endpoint
+      return [];
     } catch (err: any) {
-      if (attempt === 3) throw err;
+      if (attempt === 3) {
+        console.warn(`fetchHoldings failed for ${isin}:`, err.message);
+        return [];
+      }
       await new Promise(r => setTimeout(r, 500 * attempt));
     }
   }
@@ -120,6 +127,35 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         }
       }
 
+      // If FinAPI did not return holdings, check if another asset with this ISIN already has fund_holdings
+      if (Object.keys(stockMap).length === 0 && Object.keys(sectorMap).length === 0) {
+        const { data: siblings } = await supabaseAdmin
+          .from('assets')
+          .select('asset_id')
+          .eq('isin', cleanIsin)
+          .neq('asset_id', targetAssetId);
+
+        const siblingIds = (siblings || []).map((s: any) => s.asset_id);
+        if (siblingIds.length > 0) {
+          const { data: existingHoldings } = await supabaseAdmin
+            .from('fund_holdings')
+            .select('holding_type, holding_name, weight_percentage')
+            .in('fund_asset_id', siblingIds);
+
+          if (existingHoldings && existingHoldings.length > 0) {
+            for (const item of existingHoldings) {
+              const name = item.holding_name;
+              const weight = Number(item.weight_percentage);
+              if (item.holding_type === 'STOCK') {
+                stockMap[name] = weight;
+              } else if (item.holding_type === 'SECTOR') {
+                sectorMap[name] = weight;
+              }
+            }
+          }
+        }
+      }
+
       for (const [name, weight] of Object.entries(stockMap)) {
         singleHoldings.push({
           fund_asset_id: targetAssetId,
@@ -138,13 +174,26 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         });
       }
 
+      if (singleHoldings.length === 0) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: 'Constituent holdings are currently not disclosed by AMC feeds for this ISIN.',
+          asset_id: targetAssetId, 
+          isin: cleanIsin, 
+          stocks: [], 
+          sectors: [], 
+          rowsInserted: 0 
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200,
+        });
+      }
+
       // Atomically replace holdings for this specific fund
       await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', targetAssetId);
 
-      if (singleHoldings.length > 0) {
-        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
-        if (insErr) throw insErr;
-      }
+      const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+      if (insErr) throw insErr;
 
       const stocks = Object.entries(stockMap)
         .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
