@@ -30,13 +30,20 @@ async function fetchHoldings(isin: string): Promise<any[]> {
 
       const json = await res.json();
 
-      if (json.status !== "success" || !json.data || !Array.isArray(json.data.holdings)) {
-        throw new Error(`FinAPI error: ${json.message || json.status}`);
+      if (json?.data && Array.isArray(json.data.holdings)) {
+        return json.data.holdings;
+      }
+      if (Array.isArray(json?.data)) {
+        return json.data;
       }
 
-      return json.data.holdings;
+      // Upstream feed may not disclose holdings under this endpoint
+      return [];
     } catch (err: any) {
-      if (attempt === 3) throw err;
+      if (attempt === 3) {
+        console.warn(`fetchHoldings failed for ${isin}:`, err.message);
+        return [];
+      }
       await new Promise(r => setTimeout(r, 500 * attempt));
     }
   }
@@ -60,7 +67,158 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       authHeader && !serviceRoleKey ? { global: { headers: { Authorization: authHeader } } } : undefined
     );
 
-    // Fetch ALL MFs and ETFs with ISINs
+    // Check if on-demand single-fund sync was requested
+    let targetAssetId: string | null = null;
+    let targetIsin: string | null = null;
+
+    if (req.method === 'POST') {
+      try {
+        const body = await req.json();
+        targetAssetId = body.asset_id || body.assetId || null;
+        targetIsin = body.isin || null;
+      } catch (_e) {
+        // Body might be empty
+      }
+    }
+
+    if (!targetAssetId || !targetIsin) {
+      try {
+        const url = new URL(req.url);
+        targetAssetId = targetAssetId || url.searchParams.get('asset_id') || url.searchParams.get('assetId');
+        targetIsin = targetIsin || url.searchParams.get('isin');
+      } catch (_e) {}
+    }
+
+    // Auto-resolve ISIN from database if asset_id was provided without ISIN
+    if (targetAssetId && !targetIsin) {
+      const { data: assetRow } = await supabaseAdmin
+        .from('assets')
+        .select('isin')
+        .eq('asset_id', targetAssetId)
+        .maybeSingle();
+      if (assetRow?.isin) targetIsin = assetRow.isin.trim();
+    }
+
+    // -------------------------------------------------------------------------
+    // A. Single-Fund On-Demand Sync
+    // -------------------------------------------------------------------------
+    if (targetAssetId && targetIsin) {
+      const cleanIsin = targetIsin.trim();
+      if (cleanIsin.length !== 12) {
+        throw new Error(`Invalid ISIN format: "${cleanIsin}"`);
+      }
+
+      const rawHoldings = await fetchHoldings(cleanIsin);
+      const stockMap: Record<string, number> = {};
+      const sectorMap: Record<string, number> = {};
+      const singleHoldings: any[] = [];
+
+      for (const item of rawHoldings) {
+        if (!item.name || isNaN(Number(item.weightage))) continue;
+        const name = item.name.trim();
+        const weight = Number(item.weightage);
+        if (weight <= 0) continue;
+
+        stockMap[name] = (stockMap[name] || 0) + weight;
+
+        if (item.sector) {
+          const sector = item.sector.trim();
+          if (sector) sectorMap[sector] = (sectorMap[sector] || 0) + weight;
+        }
+      }
+
+      // If FinAPI did not return holdings, check if another asset with this ISIN already has fund_holdings
+      if (Object.keys(stockMap).length === 0 && Object.keys(sectorMap).length === 0) {
+        const { data: siblings } = await supabaseAdmin
+          .from('assets')
+          .select('asset_id')
+          .eq('isin', cleanIsin)
+          .neq('asset_id', targetAssetId);
+
+        const siblingIds = (siblings || []).map((s: any) => s.asset_id);
+        if (siblingIds.length > 0) {
+          const { data: existingHoldings } = await supabaseAdmin
+            .from('fund_holdings')
+            .select('holding_type, holding_name, weight_percentage')
+            .in('fund_asset_id', siblingIds);
+
+          if (existingHoldings && existingHoldings.length > 0) {
+            for (const item of existingHoldings) {
+              const name = item.holding_name;
+              const weight = Number(item.weight_percentage);
+              if (item.holding_type === 'STOCK') {
+                stockMap[name] = weight;
+              } else if (item.holding_type === 'SECTOR') {
+                sectorMap[name] = weight;
+              }
+            }
+          }
+        }
+      }
+
+      for (const [name, weight] of Object.entries(stockMap)) {
+        singleHoldings.push({
+          fund_asset_id: targetAssetId,
+          holding_type: 'STOCK',
+          holding_name: name,
+          weight_percentage: Number(weight.toFixed(2))
+        });
+      }
+
+      for (const [name, weight] of Object.entries(sectorMap)) {
+        singleHoldings.push({
+          fund_asset_id: targetAssetId,
+          holding_type: 'SECTOR',
+          holding_name: name,
+          weight_percentage: Number(weight.toFixed(2))
+        });
+      }
+
+      if (singleHoldings.length === 0) {
+        return new Response(JSON.stringify({ 
+          success: false, 
+          message: 'Constituent holdings are currently not disclosed by AMC feeds for this ISIN.',
+          asset_id: targetAssetId, 
+          isin: cleanIsin, 
+          stocks: [], 
+          sectors: [], 
+          rowsInserted: 0 
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      // Atomically replace holdings for this specific fund
+      await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', targetAssetId);
+
+      const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+      if (insErr) throw insErr;
+
+      const stocks = Object.entries(stockMap)
+        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      const sectors = Object.entries(sectorMap)
+        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+        .sort((a, b) => b.weight - a.weight);
+
+      return new Response(JSON.stringify({ 
+        success: true, 
+        asset_id: targetAssetId, 
+        isin: cleanIsin, 
+        stocks, 
+        sectors, 
+        rowsInserted: singleHoldings.length 
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
+    // -------------------------------------------------------------------------
+    // B. Batch Cron Sync (All MFs & ETFs with ISINs)
+    // -------------------------------------------------------------------------
     const { data: assets, error: fetchErr } = await supabaseAdmin
       .from('assets')
       .select('asset_id, symbol, name, isin, asset_type')

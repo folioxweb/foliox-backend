@@ -73,7 +73,7 @@ serve(withSystemLogging('sync-mfs', async (req) => {
           // 4. Process SIPs (handles weekends, public holidays & next trading day)
           const { data: sips } = await supabaseAdmin
             .from('mf_sip_configs')
-            .select('asset_id, sip_amount, sip_day, last_sip_date')
+            .select('asset_id, user_id, sip_amount, sip_day, last_sip_date')
             .eq('asset_id', mf.asset_id)
             .eq('is_enabled', true);
           
@@ -117,21 +117,29 @@ serve(withSystemLogging('sync-mfs', async (req) => {
 
               const quantity = sipAmount / nav;
 
+              const sipTx: Record<string, any> = {
+                asset_id: sip.asset_id,
+                tx_type: 'BUY',
+                quantity: quantity,
+                price: nav,
+                cost_price: nav,
+                tx_date: new Date().toISOString()
+              };
+              if (sip.user_id) sipTx.user_id = sip.user_id;
+
               const { error: txErr } = await supabaseAdmin
                 .from('transactions')
-                .insert({
-                  asset_id: sip.asset_id,
-                  tx_type: 'BUY',
-                  quantity: quantity,
-                  price: nav,
-                  tx_date: new Date().toISOString()
-                });
+                .insert(sipTx);
               
               if (!txErr) {
-                await supabaseAdmin
+                let updateSipQuery = supabaseAdmin
                   .from('mf_sip_configs')
                   .update({ last_sip_date: formattedNavDate })
                   .eq('asset_id', sip.asset_id);
+                if (sip.user_id) {
+                  updateSipQuery = updateSipQuery.eq('user_id', sip.user_id);
+                }
+                await updateSipQuery;
                 
                 sipsExecuted++;
                 executedSips.push(sip.asset_id);
