@@ -97,7 +97,7 @@ SELECT
     MAX(t.fd_rate) AS fd_rate,
     MIN(t.tx_date::DATE) AS start_date,
     MAX(t.fd_maturity_date) AS maturity_date,
-    MAX(t.tx_id) AS tx_id
+    MAX(t.tx_id::text)::uuid AS tx_id
 FROM public.assets a
 JOIN public.transactions t ON a.asset_id = t.asset_id
 WHERE a.asset_type = 'FD'
