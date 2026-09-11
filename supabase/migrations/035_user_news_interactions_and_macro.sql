@@ -10,7 +10,7 @@ CREATE INDEX IF NOT EXISTS idx_news_published_at ON news (published_at DESC);
 
 -- Backfill symbols from assets for existing news records
 UPDATE news n
-SET symbols = ARRAY[a.symbol]
+SET symbols = ARRAY[a.symbol::text]
 FROM assets a
 WHERE n.asset_id = a.asset_id
   AND (n.symbols IS NULL OR cardinality(n.symbols) = 0);
@@ -72,8 +72,8 @@ SELECT DISTINCT
     n.symbols,
     n.publisher_domain,
     COALESCE(n.publisher_name, n.source) AS publisher_name,
-    COALESCE(a.symbol, CASE WHEN cardinality(n.symbols) > 0 THEN n.symbols[1] ELSE 'MARKET' END) AS symbol,
-    COALESCE(a.name, CASE WHEN n.asset_id IS NULL THEN 'Market Overview' ELSE a.symbol END) AS company_name
+    COALESCE(a.symbol::text, CASE WHEN cardinality(n.symbols) > 0 THEN n.symbols[1] ELSE 'MARKET' END) AS symbol,
+    COALESCE(a.name, CASE WHEN n.asset_id IS NULL THEN 'Market Overview' ELSE a.symbol::text END) AS company_name
 FROM news n
 LEFT JOIN assets a ON n.asset_id = a.asset_id
 LEFT JOIN user_news_interactions uni ON (n.guid = uni.guid AND uni.user_id = auth.uid())
@@ -81,9 +81,9 @@ WHERE (
     -- Direct asset_id match to user's current holdings
     n.asset_id IN (SELECT asset_id FROM vw_holdings)
     -- Or any matching symbol in multi-symbol array against user's holdings
-    OR (
-        cardinality(n.symbols) > 0 
-        AND n.symbols && ARRAY(SELECT symbol FROM vw_holdings)
+    OR EXISTS (
+        SELECT 1 FROM vw_holdings h 
+        WHERE h.symbol::text = ANY(n.symbols)
     )
     -- Or Macro / General market news
     OR n.asset_id IS NULL
