@@ -136,6 +136,7 @@ serve(withSystemLogging('get-stock-chart', async (req) => {
     });
   }
 }, {
+  logOnErrorOnly: true,
   payloadFilter: (res) => ({
     success: res?.success,
     symbol: res?.symbol,
