@@ -121,6 +121,7 @@ export function withSystemLogging(
   handler: (req: Request) => Promise<Response>,
   options?: {
     payloadFilter?: (body: any) => any;
+    logOnErrorOnly?: boolean;
   }
 ) {
   return async (req: Request): Promise<Response> => {
@@ -249,6 +250,11 @@ export function withSystemLogging(
       } catch {
         finalResponseData = responseBodyData;
       }
+    }
+
+    // If logOnErrorOnly is enabled and execution was successful, skip writing to system_execution_logs
+    if (options?.logOnErrorOnly && status === 'SUCCESS') {
+      return response;
     }
 
     // Non-blocking log insert
