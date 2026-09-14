@@ -242,7 +242,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         singleHoldings.push({
           fund_asset_id: assetRow.asset_id,
           holding_type: 'STOCK',
-          holding_name: s.name,
+          holding_name: (s.name || '').trim().slice(0, 100),
           weight_percentage: s.weight
         });
       }
@@ -251,7 +251,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         singleHoldings.push({
           fund_asset_id: assetRow.asset_id,
           holding_type: 'SECTOR',
-          holding_name: sec.name,
+          holding_name: (sec.name || '').trim().slice(0, 100),
           weight_percentage: sec.weight
         });
       }
@@ -311,7 +311,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         assetHoldings.push({
           fund_asset_id: asset.asset_id,
           holding_type: 'STOCK',
-          holding_name: s.name,
+          holding_name: (s.name || '').trim().slice(0, 100),
           weight_percentage: s.weight
         });
       }
@@ -320,7 +320,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         assetHoldings.push({
           fund_asset_id: asset.asset_id,
           holding_type: 'SECTOR',
-          holding_name: sec.name,
+          holding_name: (sec.name || '').trim().slice(0, 100),
           weight_percentage: sec.weight
         });
       }

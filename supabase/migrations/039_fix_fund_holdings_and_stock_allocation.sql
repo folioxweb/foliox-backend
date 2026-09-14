@@ -7,12 +7,11 @@
 -- 4. Seeds baseline holdings & sectors across all active portfolio funds and ETFs.
 -- ============================================================================
 
--- 1. Safely widen holding_name column
-ALTER TABLE public.fund_holdings 
-    ALTER COLUMN holding_name TYPE VARCHAR(255);
+-- 1. Drop existing view to allow column schema evolution
+DROP VIEW IF EXISTS public.vw_global_stock_allocation;
 
 -- 2. Upgrade vw_global_stock_allocation
-CREATE OR REPLACE VIEW public.vw_global_stock_allocation WITH (security_invoker = true) AS
+CREATE VIEW public.vw_global_stock_allocation WITH (security_invoker = true) AS
 WITH direct_stocks AS (
     SELECT
         TRIM(REGEXP_REPLACE(h.name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')) AS stock_name,
@@ -58,11 +57,11 @@ combined_stocks AS (
 )
 SELECT
     stock_name,
+    SUM(stock_value) AS total_exposure,
+    SUM(stock_value) / NULLIF(SUM(SUM(stock_value)) OVER (), 0) * 100 AS allocation_pct,
     COALESCE(NULLIF(MAX(sector), 'Other'), 'Other') AS sector,
     SUM(direct_value) AS direct_value,
-    SUM(indirect_value) AS indirect_value,
-    SUM(stock_value) AS total_exposure,
-    SUM(stock_value) / NULLIF(SUM(SUM(stock_value)) OVER (), 0) * 100 AS allocation_pct
+    SUM(indirect_value) AS indirect_value
 FROM combined_stocks
 GROUP BY stock_name
 ORDER BY total_exposure DESC;
