@@ -129,35 +129,70 @@ async function fetchMfHoldings(identifier: { isin?: string | null, apiCode?: str
     const mfData = data?.props?.pageProps?.mutualFundsDetailData?.data;
     if (!mfData) return { stocks: [], sectors: [] };
 
-    const stocks: any[] = [];
-    const sectorMap: Record<string, number> = {};
-
-    // 1. Stock holdings
+    // 1. Stock holdings (ONLY Equity group)
     const holdingGroups = mfData?.holdings?.holdings || [];
+    const stockMap: Record<string, { sector: string; weight: number }> = {};
+
     for (const grp of holdingGroups) {
+      const grpName = (grp?.name || '').toLowerCase().trim();
+      // Only process Equity holdings — skip Debt & Cash
+      if (grpName && grpName !== 'equity') {
+        continue;
+      }
+
       const rows = grp?.table?.rows || [];
       for (const row of rows) {
-        const name = row?.name?.trim();
+        const rawName = row?.name?.trim();
+        if (!rawName) continue;
+        const name = rawName.slice(0, 100);
         const sector = row?.sector?.trim() || 'Other';
         const weightText = row?.columns?.[1]?.title || '';
         const weight = parseFloat(String(weightText).replace('%', ''));
 
-        if (name && !isNaN(weight) && weight > 0) {
-          stocks.push({ name, sector, weight: Number(weight.toFixed(2)) });
+        if (!isNaN(weight) && weight > 0) {
+          if (!stockMap[name]) {
+            stockMap[name] = { sector, weight };
+          } else {
+            stockMap[name].weight = Number((stockMap[name].weight + weight).toFixed(2));
+          }
         }
       }
     }
 
-    // 2. Sector allocations
+    const stocks = Object.entries(stockMap)
+      .map(([name, val]) => ({ name, sector: val.sector, weight: Number(val.weight.toFixed(2)) }))
+      .sort((a, b) => b.weight - a.weight);
+
+    // 2. Sector allocations (Equity sectors + Debt & Cash attribution)
     const distributions = mfData?.sector_allocation?.distribution || [];
+    const sectorMap: Record<string, number> = {};
+
     for (const dist of distributions) {
-      const secList = dist?.sectors || [];
-      for (const s of secList) {
-        const sName = s?.name?.trim();
-        const sWeight = Number(s?.percValue || parseFloat(String(s?.perc || 0).replace('%', '')));
-        if (sName && !isNaN(sWeight) && sWeight > 0) {
-          sectorMap[sName] = (sectorMap[sName] || 0) + sWeight;
+      const distName = (dist?.name || '').toLowerCase().trim();
+      const distPerc = Number(dist?.PercentageVal || parseFloat(String(dist?.perc || 0).replace('%', '')));
+
+      if (distName === 'equity') {
+        const secList = dist?.sectors || [];
+        for (const s of secList) {
+          const sName = s?.name?.trim();
+          const sWeight = Number(s?.percValue || parseFloat(String(s?.perc || 0).replace('%', '')));
+          if (sName && !isNaN(sWeight) && sWeight > 0) {
+            sectorMap[sName] = (sectorMap[sName] || 0) + sWeight;
+          }
         }
+      } else if (distName.includes('debt') || distName.includes('cash')) {
+        if (!isNaN(distPerc) && distPerc > 0) {
+          sectorMap['Debt & Cash'] = (sectorMap['Debt & Cash'] || 0) + distPerc;
+        }
+      }
+    }
+
+    // If no Debt & Cash distribution was found, but stocks sum to less than 98%, add remainder as Debt & Cash
+    const totalStockWeight = stocks.reduce((acc, s) => acc + s.weight, 0);
+    if (!sectorMap['Debt & Cash'] && totalStockWeight > 0 && totalStockWeight < 98.0) {
+      const remainder = Number((100.0 - totalStockWeight).toFixed(2));
+      if (remainder > 0.5) {
+        sectorMap['Debt & Cash'] = remainder;
       }
     }
 
@@ -218,7 +253,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       if (targetAssetId) query.eq('asset_id', targetAssetId);
       else if (targetIsin) query.eq('isin', targetIsin);
 
-      const { data: assetRow } = await query.maybeSingle();
+      const { data: assetRow } = await query.limit(1).maybeSingle();
 
       if (!assetRow) {
         throw new Error(`Asset not found for id: ${targetAssetId || targetIsin}`);
@@ -236,30 +271,69 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         });
       }
 
-      const singleHoldings: any[] = [];
+      // Mathematical Primary Key deduplication guard: (holding_type, holding_name)
+      const singleHoldingsMap = new Map<string, any>();
 
       for (const s of holdingsResult.stocks) {
-        singleHoldings.push({
-          fund_asset_id: assetRow.asset_id,
-          holding_type: 'STOCK',
-          holding_name: (s.name || '').trim().slice(0, 100),
-          weight_percentage: s.weight
-        });
+        const name = (s.name || '').trim().slice(0, 100);
+        if (!name) continue;
+        const key = `STOCK:${name.toLowerCase()}`;
+        if (!singleHoldingsMap.has(key)) {
+          singleHoldingsMap.set(key, {
+            fund_asset_id: assetRow.asset_id,
+            holding_type: 'STOCK',
+            holding_name: name,
+            weight_percentage: s.weight
+          });
+        } else {
+          // If duplicate key encountered, accumulate weight
+          const existing = singleHoldingsMap.get(key);
+          existing.weight_percentage = Number((existing.weight_percentage + s.weight).toFixed(2));
+        }
       }
 
       for (const sec of holdingsResult.sectors) {
-        singleHoldings.push({
-          fund_asset_id: assetRow.asset_id,
-          holding_type: 'SECTOR',
-          holding_name: (sec.name || '').trim().slice(0, 100),
-          weight_percentage: sec.weight
-        });
+        const name = (sec.name || '').trim().slice(0, 100);
+        if (!name) continue;
+        const key = `SECTOR:${name.toLowerCase()}`;
+        if (!singleHoldingsMap.has(key)) {
+          singleHoldingsMap.set(key, {
+            fund_asset_id: assetRow.asset_id,
+            holding_type: 'SECTOR',
+            holding_name: name,
+            weight_percentage: sec.weight
+          });
+        } else {
+          const existing = singleHoldingsMap.get(key);
+          existing.weight_percentage = Number((existing.weight_percentage + sec.weight).toFixed(2));
+        }
       }
+
+      const singleHoldings = Array.from(singleHoldingsMap.values());
 
       // CRITICAL GUARD: Only replace existing holdings if new holdings were verified!
       if (singleHoldings.length > 0) {
-        await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', assetRow.asset_id);
-        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+        let targetAssetIds = [assetRow.asset_id];
+        if (assetRow.isin) {
+          const { data: siblings } = await supabaseAdmin
+            .from('assets')
+            .select('asset_id')
+            .eq('isin', assetRow.isin);
+          if (siblings && siblings.length > 0) {
+            targetAssetIds = siblings.map((s: any) => s.asset_id);
+          }
+        }
+
+        await supabaseAdmin.from('fund_holdings').delete().in('fund_asset_id', targetAssetIds);
+
+        const allHoldingsToInsert: any[] = [];
+        for (const aid of targetAssetIds) {
+          for (const h of singleHoldings) {
+            allHoldingsToInsert.push({ ...h, fund_asset_id: aid });
+          }
+        }
+
+        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(allHoldingsToInsert);
         if (insErr) throw insErr;
       }
 
@@ -305,25 +379,43 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         });
       }
 
-      const assetHoldings: any[] = [];
+      const assetHoldingsMap = new Map<string, any>();
 
       for (const s of holdingsResult.stocks) {
-        assetHoldings.push({
-          fund_asset_id: asset.asset_id,
-          holding_type: 'STOCK',
-          holding_name: (s.name || '').trim().slice(0, 100),
-          weight_percentage: s.weight
-        });
+        const name = (s.name || '').trim().slice(0, 100);
+        if (!name) continue;
+        const key = `STOCK:${name.toLowerCase()}`;
+        if (!assetHoldingsMap.has(key)) {
+          assetHoldingsMap.set(key, {
+            fund_asset_id: asset.asset_id,
+            holding_type: 'STOCK',
+            holding_name: name,
+            weight_percentage: s.weight
+          });
+        } else {
+          const existing = assetHoldingsMap.get(key);
+          existing.weight_percentage = Number((existing.weight_percentage + s.weight).toFixed(2));
+        }
       }
 
       for (const sec of holdingsResult.sectors) {
-        assetHoldings.push({
-          fund_asset_id: asset.asset_id,
-          holding_type: 'SECTOR',
-          holding_name: (sec.name || '').trim().slice(0, 100),
-          weight_percentage: sec.weight
-        });
+        const name = (sec.name || '').trim().slice(0, 100);
+        if (!name) continue;
+        const key = `SECTOR:${name.toLowerCase()}`;
+        if (!assetHoldingsMap.has(key)) {
+          assetHoldingsMap.set(key, {
+            fund_asset_id: asset.asset_id,
+            holding_type: 'SECTOR',
+            holding_name: name,
+            weight_percentage: sec.weight
+          });
+        } else {
+          const existing = assetHoldingsMap.get(key);
+          existing.weight_percentage = Number((existing.weight_percentage + sec.weight).toFixed(2));
+        }
       }
+
+      const assetHoldings = Array.from(assetHoldingsMap.values());
 
       // CRITICAL GUARD: Only clear & update if fresh data was successfully fetched!
       if (assetHoldings.length > 0) {
