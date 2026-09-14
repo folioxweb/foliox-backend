@@ -25,31 +25,47 @@ WITH direct_stocks AS (
         TRIM(REGEXP_REPLACE(h.name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')),
         COALESCE(NULLIF(TRIM(h.sector), ''), 'Other')
 ),
-indirect_stocks AS (
-    SELECT
-        TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')) AS stock_name,
-        COALESCE(
-            NULLIF(TRIM(MAX(ns.sector)), ''),
-            NULLIF(TRIM(MAX(a.sector)), ''),
-            'Other'
-        ) AS sector,
-        0::numeric AS direct_value,
-        SUM(h.current_value * (fh.weight_percentage / 100.0)) AS indirect_value,
-        SUM(h.current_value * (fh.weight_percentage / 100.0)) AS stock_value
-    FROM public.fund_holdings fh
-    JOIN public.vw_holdings h ON fh.fund_asset_id = h.asset_id
-    LEFT JOIN public.nse_stocks ns ON (
-        LOWER(TRIM(ns.name)) = LOWER(TRIM(fh.holding_name))
-        OR LOWER(TRIM(REGEXP_REPLACE(ns.name, '\s+(Limited|Ltd\.?)$', '', 'i'))) = LOWER(TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', '', 'i')))
-    )
-    LEFT JOIN public.assets a ON (
-        (LOWER(TRIM(a.name)) = LOWER(TRIM(fh.holding_name))
-         OR LOWER(TRIM(REGEXP_REPLACE(a.name, '\s+(Limited|Ltd\.?)$', '', 'i'))) = LOWER(TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', '', 'i'))))
-        AND a.asset_type = 'STOCK'
-    )
-    WHERE fh.holding_type = 'STOCK'
-    GROUP BY TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))
-),
+    clean_nse AS (
+        SELECT DISTINCT ON (LOWER(TRIM(REGEXP_REPLACE(name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))))
+            LOWER(TRIM(REGEXP_REPLACE(name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))) AS clean_name,
+            sector
+        FROM public.nse_stocks
+        WHERE sector IS NOT NULL AND TRIM(sector) <> ''
+    ),
+    clean_assets AS (
+        SELECT DISTINCT ON (LOWER(TRIM(REGEXP_REPLACE(name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))))
+            LOWER(TRIM(REGEXP_REPLACE(name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))) AS clean_name,
+            sector
+        FROM public.assets
+        WHERE asset_type = 'STOCK' AND sector IS NOT NULL AND TRIM(sector) <> ''
+    ),
+    indirect_stocks AS (
+        SELECT
+            TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')) AS stock_name,
+            COALESCE(
+                NULLIF(TRIM(MAX(ns.sector)), ''),
+                NULLIF(TRIM(MAX(ca.sector)), ''),
+                'Other'
+            ) AS sector,
+            0::numeric AS direct_value,
+            SUM(h.current_value * (fh.weight_percentage / 100.0)) AS indirect_value,
+            SUM(h.current_value * (fh.weight_percentage / 100.0)) AS stock_value
+        FROM public.fund_holdings fh
+        JOIN public.assets a_fund ON a_fund.asset_id = fh.fund_asset_id
+        JOIN public.vw_holdings h ON (
+            h.asset_id = fh.fund_asset_id 
+            OR EXISTS (
+                SELECT 1 FROM public.assets a_holding 
+                WHERE a_holding.asset_id = h.asset_id 
+                  AND a_holding.isin IS NOT NULL 
+                  AND a_holding.isin = a_fund.isin
+            )
+        )
+        LEFT JOIN clean_nse ns ON ns.clean_name = LOWER(TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')))
+        LEFT JOIN clean_assets ca ON ca.clean_name = LOWER(TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i')))
+        WHERE fh.holding_type = 'STOCK'
+        GROUP BY TRIM(REGEXP_REPLACE(fh.holding_name, '\s+(Limited|Ltd\.?)$', ' Ltd', 'i'))
+    ),
 combined_stocks AS (
     SELECT stock_name, sector, direct_value, indirect_value, stock_value FROM direct_stocks
     UNION ALL
