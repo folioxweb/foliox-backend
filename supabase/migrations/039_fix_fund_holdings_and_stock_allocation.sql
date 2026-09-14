@@ -72,7 +72,7 @@ GRANT SELECT ON public.vw_global_stock_allocation TO authenticated, anon, servic
 CREATE OR REPLACE VIEW public.vw_global_sector_allocation WITH (security_invoker = true) AS
 WITH direct_sectors AS (
     SELECT 
-        COALESCE(NULLIF(TRIM(h.sector), ''), 'Other') AS sector_name,
+        COALESCE(NULLIF(TRIM(h.sector), ''), 'Other')::character varying AS sector_name,
         SUM(h.current_value) AS sector_value
     FROM public.vw_holdings h
     WHERE h.asset_type = 'STOCK'
@@ -80,7 +80,7 @@ WITH direct_sectors AS (
 ),
 indirect_sectors AS (
     SELECT 
-        COALESCE(NULLIF(TRIM(fh.holding_name), ''), 'Other') AS sector_name,
+        COALESCE(NULLIF(TRIM(fh.holding_name), ''), 'Other')::character varying AS sector_name,
         SUM(h.current_value * (fh.weight_percentage / 100.0)) AS sector_value
     FROM public.fund_holdings fh
     JOIN public.vw_holdings h ON fh.fund_asset_id = h.asset_id
