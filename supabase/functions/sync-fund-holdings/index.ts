@@ -253,7 +253,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       if (targetAssetId) query.eq('asset_id', targetAssetId);
       else if (targetIsin) query.eq('isin', targetIsin);
 
-      const { data: assetRow } = await query.maybeSingle();
+      const { data: assetRow } = await query.limit(1).maybeSingle();
 
       if (!assetRow) {
         throw new Error(`Asset not found for id: ${targetAssetId || targetIsin}`);
