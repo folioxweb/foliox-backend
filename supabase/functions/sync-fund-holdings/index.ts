@@ -7,50 +7,174 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-const FINAPI_BASE_URL = "https://finapi.upvaly.com/api/mf/isin";
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9"
+};
 
-// Fetch with 429/503 retry only — no blanket delay
-async function fetchHoldings(isin: string): Promise<any[]> {
-  const url = `${FINAPI_BASE_URL}/${encodeURIComponent(isin)}?fields=holdings`;
+// Known slug mappings for Mutual Funds on INDmoney
+const MF_SLUG_MAP: Record<string, string> = {
+  'INF879O01027': 'parag-parikh-flexi-cap-fund-direct-growth',
+  '122639': 'parag-parikh-flexi-cap-fund-direct-growth',
+  'INF966L01689': 'quant-small-cap-fund-growth-option-direct-plan',
+  '120828': 'quant-small-cap-fund-growth-option-direct-plan',
+  'INF846K01EH3': 'axis-midcap-fund-direct-plan-growth',
+  '120505': 'axis-midcap-fund-direct-plan-growth',
+  'INF179KA1RQ7': 'hdfc-large-mid-cap-fund-direct-growth',
+  '130498': 'hdfc-large-mid-cap-fund-direct-growth',
+  'INF879O01100': 'parag-parikh-elss-tax-saver-fund-direct-growth',
+  '147481': 'parag-parikh-elss-tax-saver-fund-direct-growth',
+  'INF22M001093': 'jioblackrock-flexi-cap-fund-direct-growth',
+  '153859': 'jioblackrock-flexi-cap-fund-direct-growth',
+};
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" }
-      });
+// NSE Official Index CSV URLs for ETFs
+const ETF_INDEX_URLS: Record<string, string> = {
+  'NIFTYBEES': 'https://www.niftyindices.com/IndexConstituent/ind_nifty50list.csv',
+  'SETFNN50': 'https://www.niftyindices.com/IndexConstituent/ind_niftynext50list.csv',
+  'ITBEES': 'https://www.niftyindices.com/IndexConstituent/ind_niftyitlist.csv',
+  'HDFCSML250': 'https://www.niftyindices.com/IndexConstituent/ind_niftysmallcap250list.csv',
+};
 
-      if (res.status === 429 || res.status === 503) {
-        // Only delay on rate limit responses
-        await new Promise(r => setTimeout(r, 2000 * attempt));
-        continue;
-      }
+// ---------------------------------------------------------------------------
+// A. Fetch ETF Constituents from Official NSE CSVs
+// ---------------------------------------------------------------------------
+async function fetchEtfHoldings(symbol: string): Promise<{ stocks: any[], sectors: any[] }> {
+  const cleanSym = symbol.toUpperCase().replace(/^NSE:|^BSE:/, '').trim();
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const json = await res.json();
-
-      if (json?.data && Array.isArray(json.data.holdings)) {
-        return json.data.holdings;
-      }
-      if (Array.isArray(json?.data)) {
-        return json.data;
-      }
-
-      // Upstream feed may not disclose holdings under this endpoint
-      return [];
-    } catch (err: any) {
-      if (attempt === 3) {
-        console.warn(`fetchHoldings failed for ${isin}:`, err.message);
-        return [];
-      }
-      await new Promise(r => setTimeout(r, 500 * attempt));
-    }
+  // Commodity ETFs (Gold / Silver)
+  if (cleanSym.includes('GOLD')) {
+    return {
+      stocks: [],
+      sectors: [{ name: 'Commodity - Gold', weight: 100.0 }]
+    };
+  }
+  if (cleanSym.includes('SILVER')) {
+    return {
+      stocks: [],
+      sectors: [{ name: 'Commodity - Silver', weight: 100.0 }]
+    };
   }
 
-  return [];
+  const csvUrl = ETF_INDEX_URLS[cleanSym];
+  if (!csvUrl) {
+    return { stocks: [], sectors: [] };
+  }
+
+  try {
+    const res = await fetch(csvUrl, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    const lines = text.trim().split('\n');
+    if (lines.length <= 1) return { stocks: [], sectors: [] };
+
+    // Header: Company Name,Industry,Symbol,Series,ISIN Code
+    const stocks: any[] = [];
+    const sectorMap: Record<string, number> = {};
+    const stockCount = lines.length - 1;
+    const equalWeight = Number((100.0 / stockCount).toFixed(2));
+
+    for (let i = 1; i < lines.length; i++) {
+      const parts = lines[i].split(',');
+      if (parts.length >= 2) {
+        const companyName = parts[0].trim();
+        const industry = parts[1].trim() || 'Other';
+        stocks.push({ name: companyName, sector: industry, weight: equalWeight });
+        sectorMap[industry] = (sectorMap[industry] || 0) + equalWeight;
+      }
+    }
+
+    const sectors = Object.entries(sectorMap)
+      .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+      .sort((a, b) => b.weight - a.weight);
+
+    return { stocks, sectors };
+  } catch (err: any) {
+    console.warn(`fetchEtfHoldings failed for ${cleanSym}:`, err.message);
+    return { stocks: [], sectors: [] };
+  }
 }
 
+// ---------------------------------------------------------------------------
+// B. Fetch Mutual Fund Constituents via INDmoney SSR Next.js Data
+// ---------------------------------------------------------------------------
+async function fetchMfHoldings(identifier: { isin?: string | null, apiCode?: string | null, name?: string | null }): Promise<{ stocks: any[], sectors: any[] }> {
+  let slug = (identifier.isin && MF_SLUG_MAP[identifier.isin]) || 
+             (identifier.apiCode && MF_SLUG_MAP[identifier.apiCode]);
+
+  if (!slug && identifier.name) {
+    // Generate fallback slug from fund name
+    slug = identifier.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .replace('-direct-plan', '-direct-growth')
+      .replace('-direct', '-direct-growth');
+  }
+
+  if (!slug) return { stocks: [], sectors: [] };
+
+  const url = `https://www.indmoney.com/mutual-funds/${slug}`;
+
+  try {
+    const res = await fetch(url, { headers: BROWSER_HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const html = await res.text();
+
+    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/);
+    if (!match || !match[1]) return { stocks: [], sectors: [] };
+
+    const data = JSON.parse(match[1]);
+    const mfData = data?.props?.pageProps?.mutualFundsDetailData?.data;
+    if (!mfData) return { stocks: [], sectors: [] };
+
+    const stocks: any[] = [];
+    const sectorMap: Record<string, number> = {};
+
+    // 1. Stock holdings
+    const holdingGroups = mfData?.holdings?.holdings || [];
+    for (const grp of holdingGroups) {
+      const rows = grp?.table?.rows || [];
+      for (const row of rows) {
+        const name = row?.name?.trim();
+        const sector = row?.sector?.trim() || 'Other';
+        const weightText = row?.columns?.[1]?.title || '';
+        const weight = parseFloat(String(weightText).replace('%', ''));
+
+        if (name && !isNaN(weight) && weight > 0) {
+          stocks.push({ name, sector, weight: Number(weight.toFixed(2)) });
+        }
+      }
+    }
+
+    // 2. Sector allocations
+    const distributions = mfData?.sector_allocation?.distribution || [];
+    for (const dist of distributions) {
+      const secList = dist?.sectors || [];
+      for (const s of secList) {
+        const sName = s?.name?.trim();
+        const sWeight = Number(s?.percValue || parseFloat(String(s?.perc || 0).replace('%', '')));
+        if (sName && !isNaN(sWeight) && sWeight > 0) {
+          sectorMap[sName] = (sectorMap[sName] || 0) + sWeight;
+        }
+      }
+    }
+
+    const sectors = Object.entries(sectorMap)
+      .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
+      .sort((a, b) => b.weight - a.weight);
+
+    return { stocks, sectors };
+  } catch (err: any) {
+    console.warn(`fetchMfHoldings failed for slug ${slug}:`, err.message);
+    return { stocks: [], sectors: [] };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Edge Function Entrypoint
+// ---------------------------------------------------------------------------
 serve(withSystemLogging('sync-fund-holdings', async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -67,7 +191,6 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       authHeader && !serviceRoleKey ? { global: { headers: { Authorization: authHeader } } } : undefined
     );
 
-    // Check if on-demand single-fund sync was requested
     let targetAssetId: string | null = null;
     let targetIsin: string | null = null;
 
@@ -76,9 +199,7 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
         const body = await req.json();
         targetAssetId = body.asset_id || body.assetId || null;
         targetIsin = body.isin || null;
-      } catch (_e) {
-        // Body might be empty
-      }
+      } catch (_e) {}
     }
 
     if (!targetAssetId || !targetIsin) {
@@ -89,126 +210,66 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
       } catch (_e) {}
     }
 
-    // Auto-resolve ISIN from database if asset_id was provided without ISIN
-    if (targetAssetId && !targetIsin) {
-      const { data: assetRow } = await supabaseAdmin
-        .from('assets')
-        .select('isin')
-        .eq('asset_id', targetAssetId)
-        .maybeSingle();
-      if (assetRow?.isin) targetIsin = assetRow.isin.trim();
-    }
-
     // -------------------------------------------------------------------------
     // A. Single-Fund On-Demand Sync
     // -------------------------------------------------------------------------
-    if (targetAssetId && targetIsin) {
-      const cleanIsin = targetIsin.trim();
-      if (cleanIsin.length !== 12) {
-        throw new Error(`Invalid ISIN format: "${cleanIsin}"`);
+    if (targetAssetId || targetIsin) {
+      const query = supabaseAdmin.from('assets').select('asset_id, symbol, name, isin, api_code, asset_type');
+      if (targetAssetId) query.eq('asset_id', targetAssetId);
+      else if (targetIsin) query.eq('isin', targetIsin);
+
+      const { data: assetRow } = await query.maybeSingle();
+
+      if (!assetRow) {
+        throw new Error(`Asset not found for id: ${targetAssetId || targetIsin}`);
       }
 
-      const rawHoldings = await fetchHoldings(cleanIsin);
-      const stockMap: Record<string, number> = {};
-      const sectorMap: Record<string, number> = {};
+      let holdingsResult: { stocks: any[], sectors: any[] } = { stocks: [], sectors: [] };
+
+      if (assetRow.asset_type === 'ETF') {
+        holdingsResult = await fetchEtfHoldings(assetRow.symbol);
+      } else {
+        holdingsResult = await fetchMfHoldings({
+          isin: assetRow.isin,
+          apiCode: assetRow.api_code,
+          name: assetRow.name
+        });
+      }
+
       const singleHoldings: any[] = [];
 
-      for (const item of rawHoldings) {
-        if (!item.name || isNaN(Number(item.weightage))) continue;
-        const name = item.name.trim();
-        const weight = Number(item.weightage);
-        if (weight <= 0) continue;
-
-        stockMap[name] = (stockMap[name] || 0) + weight;
-
-        if (item.sector) {
-          const sector = item.sector.trim();
-          if (sector) sectorMap[sector] = (sectorMap[sector] || 0) + weight;
-        }
-      }
-
-      // If FinAPI did not return holdings, check if another asset with this ISIN already has fund_holdings
-      if (Object.keys(stockMap).length === 0 && Object.keys(sectorMap).length === 0) {
-        const { data: siblings } = await supabaseAdmin
-          .from('assets')
-          .select('asset_id')
-          .eq('isin', cleanIsin)
-          .neq('asset_id', targetAssetId);
-
-        const siblingIds = (siblings || []).map((s: any) => s.asset_id);
-        if (siblingIds.length > 0) {
-          const { data: existingHoldings } = await supabaseAdmin
-            .from('fund_holdings')
-            .select('holding_type, holding_name, weight_percentage')
-            .in('fund_asset_id', siblingIds);
-
-          if (existingHoldings && existingHoldings.length > 0) {
-            for (const item of existingHoldings) {
-              const name = item.holding_name;
-              const weight = Number(item.weight_percentage);
-              if (item.holding_type === 'STOCK') {
-                stockMap[name] = weight;
-              } else if (item.holding_type === 'SECTOR') {
-                sectorMap[name] = weight;
-              }
-            }
-          }
-        }
-      }
-
-      for (const [name, weight] of Object.entries(stockMap)) {
+      for (const s of holdingsResult.stocks) {
         singleHoldings.push({
-          fund_asset_id: targetAssetId,
+          fund_asset_id: assetRow.asset_id,
           holding_type: 'STOCK',
-          holding_name: name,
-          weight_percentage: Number(weight.toFixed(2))
+          holding_name: s.name,
+          weight_percentage: s.weight
         });
       }
 
-      for (const [name, weight] of Object.entries(sectorMap)) {
+      for (const sec of holdingsResult.sectors) {
         singleHoldings.push({
-          fund_asset_id: targetAssetId,
+          fund_asset_id: assetRow.asset_id,
           holding_type: 'SECTOR',
-          holding_name: name,
-          weight_percentage: Number(weight.toFixed(2))
+          holding_name: sec.name,
+          weight_percentage: sec.weight
         });
       }
 
-      if (singleHoldings.length === 0) {
-        return new Response(JSON.stringify({ 
-          success: false, 
-          message: 'Constituent holdings are currently not disclosed by AMC feeds for this ISIN.',
-          asset_id: targetAssetId, 
-          isin: cleanIsin, 
-          stocks: [], 
-          sectors: [], 
-          rowsInserted: 0 
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          status: 200,
-        });
+      // CRITICAL GUARD: Only replace existing holdings if new holdings were verified!
+      if (singleHoldings.length > 0) {
+        await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', assetRow.asset_id);
+        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+        if (insErr) throw insErr;
       }
-
-      // Atomically replace holdings for this specific fund
-      await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', targetAssetId);
-
-      const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
-      if (insErr) throw insErr;
-
-      const stocks = Object.entries(stockMap)
-        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
-        .sort((a, b) => b.weight - a.weight);
-
-      const sectors = Object.entries(sectorMap)
-        .map(([name, weight]) => ({ name, weight: Number(weight.toFixed(2)) }))
-        .sort((a, b) => b.weight - a.weight);
 
       return new Response(JSON.stringify({ 
         success: true, 
-        asset_id: targetAssetId, 
-        isin: cleanIsin, 
-        stocks, 
-        sectors, 
+        asset_id: assetRow.asset_id, 
+        symbol: assetRow.symbol,
+        isin: assetRow.isin, 
+        stocks: holdingsResult.stocks, 
+        sectors: holdingsResult.sectors, 
         rowsInserted: singleHoldings.length 
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -217,107 +278,80 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
     }
 
     // -------------------------------------------------------------------------
-    // B. Batch Cron Sync (All MFs & ETFs with ISINs)
+    // B. Batch Sync (All MFs & ETFs)
     // -------------------------------------------------------------------------
     const { data: assets, error: fetchErr } = await supabaseAdmin
       .from('assets')
-      .select('asset_id, symbol, name, isin, asset_type')
-      .in('asset_type', ['MF', 'ETF'])
-      .not('isin', 'is', null);
+      .select('asset_id, symbol, name, isin, api_code, asset_type')
+      .in('asset_type', ['MF', 'ETF']);
 
     if (fetchErr) throw fetchErr;
 
-    const newHoldings: any[] = [];
-    const processedAssetIds: string[] = [];
+    let totalInserted = 0;
     const results: any[] = [];
 
-    // Run sequentially with a small delay to prevent FinAPI rate limiting
     for (const asset of assets || []) {
-      const isin = (asset.isin || "").trim();
+      await new Promise(r => setTimeout(r, 600)); // Polite interval
 
-      if (isin.length !== 12) {
-        results.push({ symbol: asset.symbol, status: 'SKIPPED', reason: `Invalid ISIN: "${isin}"` });
-        continue;
-      }
+      let holdingsResult: { stocks: any[], sectors: any[] } = { stocks: [], sectors: [] };
 
-      // Small polite delay between each ISIN request
-      await new Promise(r => setTimeout(r, 800));
-
-      try {
-        const rawHoldings = await fetchHoldings(isin);
-
-        const stockMap: Record<string, number> = {};
-        const sectorMap: Record<string, number> = {};
-
-        for (const item of rawHoldings) {
-          if (!item.name || isNaN(Number(item.weightage))) continue;
-          const name = item.name.trim();
-          const weight = Number(item.weightage);
-          if (weight <= 0) continue;
-
-          stockMap[name] = (stockMap[name] || 0) + weight;
-
-          if (item.sector) {
-            const sector = item.sector.trim();
-            if (sector) sectorMap[sector] = (sectorMap[sector] || 0) + weight;
-          }
-        }
-
-        for (const [name, weight] of Object.entries(stockMap)) {
-          newHoldings.push({
-            fund_asset_id: asset.asset_id,
-            holding_type: 'STOCK',
-            holding_name: name,
-            weight_percentage: Number(weight.toFixed(2))
-          });
-        }
-
-        for (const [name, weight] of Object.entries(sectorMap)) {
-          newHoldings.push({
-            fund_asset_id: asset.asset_id,
-            holding_type: 'SECTOR',
-            holding_name: name,
-            weight_percentage: Number(weight.toFixed(2))
-          });
-        }
-
-        processedAssetIds.push(asset.asset_id);
-        results.push({
-          symbol: asset.symbol,
-          asset_type: asset.asset_type,
-          isin,
-          status: 'OK',
-          stocks: Object.keys(stockMap).length,
-          sectors: Object.keys(sectorMap).length,
-          rawHoldingsCount: rawHoldings.length
+      if (asset.asset_type === 'ETF') {
+        holdingsResult = await fetchEtfHoldings(asset.symbol);
+      } else {
+        holdingsResult = await fetchMfHoldings({
+          isin: asset.isin,
+          apiCode: asset.api_code,
+          name: asset.name
         });
-      } catch (err: any) {
-        results.push({ symbol: asset.symbol, asset_type: asset.asset_type, isin, status: 'ERROR', error: err.message });
       }
-    }
 
-    // Clear old holdings only for successfully fetched assets
-    if (processedAssetIds.length > 0) {
-      await supabaseAdmin.from('fund_holdings').delete().in('fund_asset_id', processedAssetIds);
-    }
+      const assetHoldings: any[] = [];
 
-    // Insert in batches
-    let insertedCount = 0;
-    if (newHoldings.length > 0) {
-      const BATCH = 200;
-      for (let i = 0; i < newHoldings.length; i += BATCH) {
-        const { error: insertErr } = await supabaseAdmin
-          .from('fund_holdings')
-          .insert(newHoldings.slice(i, i + BATCH));
-        if (insertErr) throw insertErr;
+      for (const s of holdingsResult.stocks) {
+        assetHoldings.push({
+          fund_asset_id: asset.asset_id,
+          holding_type: 'STOCK',
+          holding_name: s.name,
+          weight_percentage: s.weight
+        });
       }
-      insertedCount = newHoldings.length;
+
+      for (const sec of holdingsResult.sectors) {
+        assetHoldings.push({
+          fund_asset_id: asset.asset_id,
+          holding_type: 'SECTOR',
+          holding_name: sec.name,
+          weight_percentage: sec.weight
+        });
+      }
+
+      // CRITICAL GUARD: Only clear & update if fresh data was successfully fetched!
+      if (assetHoldings.length > 0) {
+        await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', asset.asset_id);
+        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(assetHoldings);
+        if (!insErr) {
+          totalInserted += assetHoldings.length;
+        }
+      }
+
+      results.push({
+        symbol: asset.symbol,
+        asset_type: asset.asset_type,
+        status: assetHoldings.length > 0 ? 'UPDATED' : 'PRESERVED',
+        stocksCount: holdingsResult.stocks.length,
+        sectorsCount: holdingsResult.sectors.length
+      });
     }
 
-    return new Response(JSON.stringify({ success: true, rowsInserted: insertedCount, results }), {
+    return new Response(JSON.stringify({ 
+      success: true, 
+      rowsInserted: totalInserted, 
+      results 
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     });
+
   } catch (error: any) {
     return new Response(JSON.stringify({ success: false, error: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

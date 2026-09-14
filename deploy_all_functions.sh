@@ -4,7 +4,7 @@
 # Deploys all 11 Edge Functions from UAT backend to the UAT Supabase Project
 # ============================================================================
 
-PROJECT_REF="yfyvceirbveamvcgbvps"
+PROJECT_REF="auflgeottunktfkwakab"
 
 if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
   echo "======================================================================"
