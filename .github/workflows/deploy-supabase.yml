@@ -19,7 +19,7 @@ jobs:
       - name: Setup Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.112.0
 
       - name: Configure Target Environment
         id: env-config
