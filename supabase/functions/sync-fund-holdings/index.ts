@@ -313,8 +313,27 @@ serve(withSystemLogging('sync-fund-holdings', async (req) => {
 
       // CRITICAL GUARD: Only replace existing holdings if new holdings were verified!
       if (singleHoldings.length > 0) {
-        await supabaseAdmin.from('fund_holdings').delete().eq('fund_asset_id', assetRow.asset_id);
-        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(singleHoldings);
+        let targetAssetIds = [assetRow.asset_id];
+        if (assetRow.isin) {
+          const { data: siblings } = await supabaseAdmin
+            .from('assets')
+            .select('asset_id')
+            .eq('isin', assetRow.isin);
+          if (siblings && siblings.length > 0) {
+            targetAssetIds = siblings.map((s: any) => s.asset_id);
+          }
+        }
+
+        await supabaseAdmin.from('fund_holdings').delete().in('fund_asset_id', targetAssetIds);
+
+        const allHoldingsToInsert: any[] = [];
+        for (const aid of targetAssetIds) {
+          for (const h of singleHoldings) {
+            allHoldingsToInsert.push({ ...h, fund_asset_id: aid });
+          }
+        }
+
+        const { error: insErr } = await supabaseAdmin.from('fund_holdings').insert(allHoldingsToInsert);
         if (insErr) throw insErr;
       }
 
