@@ -7,6 +7,11 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// Resilient performance constants
+const PER_REQUEST_TIMEOUT_MS = 5000;   // 5 seconds max per Google News RSS fetch
+const CONCURRENCY_LIMIT = 5;          // Process 5 feeds concurrently
+const EXECUTION_TIME_BUDGET_MS = 45000;// 45s hard budget before graceful return and flush
+
 const LEGAL_SUFFIX_RE = /\b(Limited|Ltd\.?|Corporation|Corp\.?|Inc\.?|PLC|LLP|Pvt\.?|Private|Holdings?|Enterprises?|Co\.?)\b/gi;
 
 const FINANCIAL_CONTEXT_REGEX = /\b(stocks?|shares?|equity|equities|q[1-4]|quarter|quarterly|results?|profit|loss|revenue|ebitda|dividend|yield|order|contract|target|brokerage|buy|sell|downgrade|upgrade|board|agm|filing|sebi|bse|nse|nifty|sensex|rises?|falls?|jumps?|plunges?|surges?|gains?|dips?|rally|stake|capex|merger|acquisition)\b/i;
@@ -22,7 +27,7 @@ const MACRO_FEEDS = [
   {
     name: 'RBI & Macroeconomy',
     query: '"Reserve Bank of India" OR "RBI monetary policy" OR "repo rate" OR "Indian economy"',
-    lookbackDays: 3,
+    lookbackDays: 2,
     category: 'Economy',
     source: 'Economic Outlook'
   }
@@ -87,10 +92,197 @@ function isArticleRelevant(title: string, company: { name: string; symbol: strin
   return false;
 }
 
+function parseRssXml(xmlText: string, onItem: (itemXml: string) => void): void {
+  const itemRegex = /<item>([\s\S]*?)<\/item>/g;
+  let match: RegExpExecArray | null;
+  while ((match = itemRegex.exec(xmlText)) !== null) {
+    onItem(match[1]);
+  }
+}
+
+async function fetchCompanyNews(
+  companyObj: { asset_id: string; symbol: string; name: string; cleanName: string },
+  lookbackDays: number,
+  allCompanies: { asset_id: string; symbol: string; name: string; cleanName: string }[]
+): Promise<any[]> {
+  const searchQuery = buildSearchQuery(companyObj, lookbackDays);
+  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=en-IN&gl=IN&ceid=IN:en`;
+
+  const articles: any[] = [];
+  try {
+    const response = await fetch(rssUrl, {
+      signal: AbortSignal.timeout(PER_REQUEST_TIMEOUT_MS),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+      }
+    });
+
+    if (!response.ok) {
+      console.warn(`[sync-news] HTTP ${response.status} for ${companyObj.symbol}`);
+      return articles;
+    }
+
+    const xmlText = await response.text();
+    const titleRegex = /<title>([\s\S]*?)<\/title>/;
+    const linkRegex = /<link>([\s\S]*?)<\/link>/;
+    const pubDateRegex = /<pubDate>([\s\S]*?)<\/pubDate>/;
+    const guidRegex = /<guid[^>]*>([\s\S]*?)<\/guid>/;
+    const sourceWithUrlRegex = /<source[^>]*url=["']([^"']*)["'][^>]*>([\s\S]*?)<\/source>/;
+    const fallbackSourceRegex = /<source[^>]*>([\s\S]*?)<\/source>/;
+
+    parseRssXml(xmlText, (itemXml) => {
+      const rawGuid = itemXml.match(guidRegex)?.[1];
+      if (!rawGuid) return;
+
+      const rawTitle = cleanHtml(itemXml.match(titleRegex)?.[1] || '');
+      if (!rawTitle) return;
+
+      // Strict relevance check with word boundaries and financial context
+      if (!isArticleRelevant(rawTitle, companyObj)) {
+        return;
+      }
+
+      const link = cleanHtml(itemXml.match(linkRegex)?.[1] || '');
+      const pubDateStr = itemXml.match(pubDateRegex)?.[1] || '';
+
+      let publisherDomain = '';
+      let source = '';
+      const sourceMatch = itemXml.match(sourceWithUrlRegex);
+      if (sourceMatch) {
+        publisherDomain = cleanHtml(sourceMatch[1]);
+        source = cleanHtml(sourceMatch[2]);
+      } else {
+        source = cleanHtml(itemXml.match(fallbackSourceRegex)?.[1] || '');
+      }
+
+      // Clean title: strip trailing source & live updates suffix
+      const title = rawTitle
+        .replace(/\s*-\s*[^-]+$/, "")
+        .replace(/\s*\|\s*[^|]+$/, "")
+        .replace(/\s*:\s*Live Updates$/i, "")
+        .trim();
+
+      if (!source && rawTitle.includes(' - ')) {
+        const parts = rawTitle.split(' - ');
+        source = parts[parts.length - 1].trim();
+      }
+
+      const pubDate = new Date(pubDateStr);
+      const publishedAt = isNaN(pubDate.getTime()) ? new Date().toISOString() : pubDate.toISOString();
+
+      // Multi-symbol detection: check if other portfolio assets are also mentioned
+      const matchedSymbols = new Set<string>([companyObj.symbol]);
+      for (const otherComp of allCompanies) {
+        if (otherComp.symbol !== companyObj.symbol && isArticleRelevant(title || rawTitle, otherComp)) {
+          matchedSymbols.add(otherComp.symbol);
+        }
+      }
+
+      articles.push({
+        guid: rawGuid,
+        asset_id: companyObj.asset_id,
+        symbols: Array.from(matchedSymbols),
+        title: title || rawTitle,
+        source: source || 'Google News',
+        publisher_domain: publisherDomain || null,
+        publisher_name: source || 'Google News',
+        published_at: publishedAt,
+        url: link,
+        category: 'Stock'
+      });
+    });
+  } catch (err: any) {
+    console.warn(`[sync-news] Error/timeout fetching news for ${companyObj.symbol}:`, err.message || err);
+  }
+  return articles;
+}
+
+async function fetchMacroNews(
+  macroFeed: typeof MACRO_FEEDS[number],
+  lookbackDays: number
+): Promise<any[]> {
+  const actualLookback = Math.min(macroFeed.lookbackDays, lookbackDays);
+  const macroQuery = `${macroFeed.query} when:${actualLookback}d`;
+  const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(macroQuery)}&hl=en-IN&gl=IN&ceid=IN:en`;
+
+  const articles: any[] = [];
+  try {
+    const response = await fetch(rssUrl, {
+      signal: AbortSignal.timeout(PER_REQUEST_TIMEOUT_MS),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+      }
+    });
+
+    if (!response.ok) {
+      console.warn(`[sync-news] HTTP ${response.status} for macro: ${macroFeed.name}`);
+      return articles;
+    }
+
+    const xmlText = await response.text();
+    const titleRegex = /<title>([\s\S]*?)<\/title>/;
+    const linkRegex = /<link>([\s\S]*?)<\/link>/;
+    const pubDateRegex = /<pubDate>([\s\S]*?)<\/pubDate>/;
+    const guidRegex = /<guid[^>]*>([\s\S]*?)<\/guid>/;
+    const sourceWithUrlRegex = /<source[^>]*url=["']([^"']*)["'][^>]*>([\s\S]*?)<\/source>/;
+    const fallbackSourceRegex = /<source[^>]*>([\s\S]*?)<\/source>/;
+
+    parseRssXml(xmlText, (itemXml) => {
+      const rawGuid = itemXml.match(guidRegex)?.[1];
+      if (!rawGuid) return;
+
+      const rawTitle = cleanHtml(itemXml.match(titleRegex)?.[1] || '');
+      if (!rawTitle) return;
+
+      const link = cleanHtml(itemXml.match(linkRegex)?.[1] || '');
+      const pubDateStr = itemXml.match(pubDateRegex)?.[1] || '';
+
+      let publisherDomain = '';
+      let source = '';
+      const sourceMatch = itemXml.match(sourceWithUrlRegex);
+      if (sourceMatch) {
+        publisherDomain = cleanHtml(sourceMatch[1]);
+        source = cleanHtml(sourceMatch[2]);
+      } else {
+        source = cleanHtml(itemXml.match(fallbackSourceRegex)?.[1] || '');
+      }
+
+      const title = rawTitle
+        .replace(/\s*-\s*[^-]+$/, "")
+        .replace(/\s*\|\s*[^|]+$/, "")
+        .replace(/\s*:\s*Live Updates$/i, "")
+        .trim();
+
+      const pubDate = new Date(pubDateStr);
+      const publishedAt = isNaN(pubDate.getTime()) ? new Date().toISOString() : pubDate.toISOString();
+
+      articles.push({
+        guid: rawGuid,
+        asset_id: null,
+        symbols: [],
+        title: title || rawTitle,
+        source: source || macroFeed.source,
+        publisher_domain: publisherDomain || null,
+        publisher_name: source || macroFeed.source,
+        published_at: publishedAt,
+        url: link,
+        category: macroFeed.category
+      });
+    });
+  } catch (err: any) {
+    console.warn(`[sync-news] Error/timeout fetching macro feed ${macroFeed.name}:`, err.message || err);
+  }
+  return articles;
+}
+
 serve(withSystemLogging('sync-news', async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
+
+  const startTime = performance.now();
 
   try {
     const authHeader = req.headers.get('Authorization');
@@ -104,7 +296,8 @@ serve(withSystemLogging('sync-news', async (req) => {
     );
 
     const payload = await req.json().catch(() => ({}));
-    const lookbackDays = Number(payload.lookbackDays || 7);
+    // Default lookback is 2 days (48h) for hourly cron; caller can override
+    const lookbackDays = Number(payload.lookbackDays || 2);
 
     // 1. Fetch tracked assets
     const { data: assets, error: fetchErr } = await supabaseAdmin
@@ -126,17 +319,6 @@ serve(withSystemLogging('sync-news', async (req) => {
       if (n.symbol && n.name) nseNameMap.set(n.symbol, n.name);
     });
 
-    const newArticles: any[] = [];
-    const seenGuids = new Set<string>();
-
-    const itemRegex = /<item>([\s\S]*?)<\/item>/g;
-    const titleRegex = /<title>([\s\S]*?)<\/title>/;
-    const linkRegex = /<link>([\s\S]*?)<\/link>/;
-    const pubDateRegex = /<pubDate>([\s\S]*?)<\/pubDate>/;
-    const guidRegex = /<guid[^>]*>([\s\S]*?)<\/guid>/;
-    const sourceWithUrlRegex = /<source[^>]*url=["']([^"']*)["'][^>]*>([\s\S]*?)<\/source>/;
-    const fallbackSourceRegex = /<source[^>]*>([\s\S]*?)<\/source>/;
-
     // Build lookup for all tracked companies for multi-symbol cross-referencing
     const companyObjects = (assets || []).map(asset => {
       const canonicalName = nseNameMap.get(asset.symbol) || asset.name || asset.symbol;
@@ -149,176 +331,82 @@ serve(withSystemLogging('sync-news', async (req) => {
       };
     });
 
-    // 3. Fetch news for individual tracked stocks / ETFs
-    for (const companyObj of companyObjects) {
-      const searchQuery = buildSearchQuery(companyObj, lookbackDays);
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(searchQuery)}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const allArticles: any[] = [];
+    const seenGuids = new Set<string>();
+    let companiesProcessed = 0;
+    let budgetExceeded = false;
 
-      try {
-        const response = await fetch(rssUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-        });
-
-        if (!response.ok) continue;
-
-        const xmlText = await response.text();
-        let match;
-
-        while ((match = itemRegex.exec(xmlText)) !== null) {
-          const itemXml = match[1];
-          const rawGuid = itemXml.match(guidRegex)?.[1];
-          if (!rawGuid || seenGuids.has(rawGuid)) continue;
-
-          let rawTitle = cleanHtml(itemXml.match(titleRegex)?.[1] || '');
-          if (!rawTitle) continue;
-
-          // Strict relevance check with word boundaries and financial context
-          if (!isArticleRelevant(rawTitle, companyObj)) {
-            continue;
-          }
-
-          seenGuids.add(rawGuid);
-
-          const link = cleanHtml(itemXml.match(linkRegex)?.[1] || '');
-          const pubDateStr = itemXml.match(pubDateRegex)?.[1] || '';
-
-          let publisherDomain = '';
-          let source = '';
-          const sourceMatch = itemXml.match(sourceWithUrlRegex);
-          if (sourceMatch) {
-            publisherDomain = cleanHtml(sourceMatch[1]);
-            source = cleanHtml(sourceMatch[2]);
-          } else {
-            source = cleanHtml(itemXml.match(fallbackSourceRegex)?.[1] || '');
-          }
-
-          // Clean title: strip trailing source & live updates suffix
-          let title = rawTitle
-            .replace(/\s*-\s*[^-]+$/, "")
-            .replace(/\s*\|\s*[^|]+$/, "")
-            .replace(/\s*:\s*Live Updates$/i, "")
-            .trim();
-
-          if (!source && rawTitle.includes(' - ')) {
-            const parts = rawTitle.split(' - ');
-            source = parts[parts.length - 1].trim();
-          }
-
-          const pubDate = new Date(pubDateStr);
-          const publishedAt = isNaN(pubDate.getTime()) ? new Date().toISOString() : pubDate.toISOString();
-
-          // Multi-symbol detection: check if other portfolio assets are also mentioned
-          const matchedSymbols = new Set<string>([companyObj.symbol]);
-          for (const otherComp of companyObjects) {
-            if (otherComp.symbol !== companyObj.symbol && isArticleRelevant(title || rawTitle, otherComp)) {
-              matchedSymbols.add(otherComp.symbol);
-            }
-          }
-
-          newArticles.push({
-            guid: rawGuid,
-            asset_id: companyObj.asset_id,
-            symbols: Array.from(matchedSymbols),
-            title: title || rawTitle,
-            source: source || 'Google News',
-            publisher_domain: publisherDomain || null,
-            publisher_name: source || 'Google News',
-            published_at: publishedAt,
-            url: link,
-            category: 'Stock'
-          });
-        }
-      } catch (e) {
-        console.warn(`Failed fetching news for ${companyObj.symbol}:`, e);
+    // 3. Concurrent batch processing with execution time budget protection
+    for (let i = 0; i < companyObjects.length; i += CONCURRENCY_LIMIT) {
+      if (performance.now() - startTime > EXECUTION_TIME_BUDGET_MS) {
+        console.warn(`[sync-news] Execution budget (${EXECUTION_TIME_BUDGET_MS}ms) reached. Processed ${companiesProcessed}/${companyObjects.length} companies.`);
+        budgetExceeded = true;
+        break;
       }
+
+      const chunk = companyObjects.slice(i, i + CONCURRENCY_LIMIT);
+      const chunkResults = await Promise.all(
+        chunk.map(comp => fetchCompanyNews(comp, lookbackDays, companyObjects))
+      );
+
+      for (const articleList of chunkResults) {
+        for (const art of articleList) {
+          if (!seenGuids.has(art.guid)) {
+            seenGuids.add(art.guid);
+            allArticles.push(art);
+          }
+        }
+      }
+      companiesProcessed += chunk.length;
     }
 
-    // 4. Fetch General Macro & Market Overview feeds (asset_id = null)
-    for (const macroFeed of MACRO_FEEDS) {
-      const macroQuery = `${macroFeed.query} when:${macroFeed.lookbackDays}d`;
-      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(macroQuery)}&hl=en-IN&gl=IN&ceid=IN:en`;
-
-      try {
-        const response = await fetch(rssUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
-        });
-
-        if (!response.ok) continue;
-
-        const xmlText = await response.text();
-        let match;
-
-        while ((match = itemRegex.exec(xmlText)) !== null) {
-          const itemXml = match[1];
-          const rawGuid = itemXml.match(guidRegex)?.[1];
-          if (!rawGuid || seenGuids.has(rawGuid)) continue;
-
-          let rawTitle = cleanHtml(itemXml.match(titleRegex)?.[1] || '');
-          if (!rawTitle) continue;
-
-          seenGuids.add(rawGuid);
-
-          const link = cleanHtml(itemXml.match(linkRegex)?.[1] || '');
-          const pubDateStr = itemXml.match(pubDateRegex)?.[1] || '';
-
-          let publisherDomain = '';
-          let source = '';
-          const sourceMatch = itemXml.match(sourceWithUrlRegex);
-          if (sourceMatch) {
-            publisherDomain = cleanHtml(sourceMatch[1]);
-            source = cleanHtml(sourceMatch[2]);
-          } else {
-            source = cleanHtml(itemXml.match(fallbackSourceRegex)?.[1] || '');
+    // 4. Fetch General Macro & Market Overview feeds concurrently (if within budget)
+    if (!budgetExceeded && (performance.now() - startTime <= EXECUTION_TIME_BUDGET_MS)) {
+      const macroResults = await Promise.all(
+        MACRO_FEEDS.map(feed => fetchMacroNews(feed, lookbackDays))
+      );
+      for (const articleList of macroResults) {
+        for (const art of articleList) {
+          if (!seenGuids.has(art.guid)) {
+            seenGuids.add(art.guid);
+            allArticles.push(art);
           }
-
-          let title = rawTitle
-            .replace(/\s*-\s*[^-]+$/, "")
-            .replace(/\s*\|\s*[^|]+$/, "")
-            .replace(/\s*:\s*Live Updates$/i, "")
-            .trim();
-
-          const pubDate = new Date(pubDateStr);
-          const publishedAt = isNaN(pubDate.getTime()) ? new Date().toISOString() : pubDate.toISOString();
-
-          newArticles.push({
-            guid: rawGuid,
-            asset_id: null,
-            symbols: [],
-            title: title || rawTitle,
-            source: source || macroFeed.source,
-            publisher_domain: publisherDomain || null,
-            publisher_name: source || macroFeed.source,
-            published_at: publishedAt,
-            url: link,
-            category: macroFeed.category
-          });
         }
-      } catch (e) {
-        console.warn(`Failed fetching macro news for ${macroFeed.name}:`, e);
       }
     }
 
     // 5. Upsert articles into news table
     let insertedCount = 0;
-    if (newArticles.length > 0) {
+    if (allArticles.length > 0) {
       const { error: upsertErr, count } = await supabaseAdmin
         .from('news')
-        .upsert(newArticles, { onConflict: 'guid', ignoreDuplicates: true, count: 'exact' });
+        .upsert(allArticles, { onConflict: 'guid', ignoreDuplicates: true, count: 'exact' });
 
       if (upsertErr) throw upsertErr;
-      insertedCount = count ?? newArticles.length;
+      insertedCount = count ?? allArticles.length;
     }
+
+    const durationMs = Math.round(performance.now() - startTime);
 
     return new Response(JSON.stringify({
       success: true,
-      fetched: newArticles.length,
-      inserted: insertedCount
+      budgetExceeded,
+      companiesProcessed,
+      totalCompanies: companyObjects.length,
+      fetched: allArticles.length,
+      inserted: insertedCount,
+      durationMs
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     });
   } catch (error: any) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    const durationMs = Math.round(performance.now() - startTime);
+    console.error('[sync-news] Error during execution:', error);
+    return new Response(JSON.stringify({
+      error: error.message || String(error),
+      durationMs
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 400,
     });
